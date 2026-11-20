@@ -1,0 +1,34 @@
+# JobPilot on a single server (e.g. AWS EC2) with automatic HTTPS via Caddy.
+# Usage: copy .env.example to .env, set JOBPILOT_PASSWORD, JOBPILOT_SECRET_KEY and PUBLIC_HOST, then:
+#   docker compose up -d --build
+services:
+  app:
+    build: .
+    image: jobpilot:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      JOBPILOT_ENV: production
+      JOBPILOT_DATA_DIR: /data
+      JOBPILOT_PERSISTENT_STORAGE: "1"
+    volumes:
+      - jobpilot-data:/data
+    expose:
+      - "8000"
+  caddy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?Set PUBLIC_HOST in .env, e.g. 13-233-10-20.sslip.io}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+volumes:
+  jobpilot-data:
+  caddy-data:
+  caddy-config:

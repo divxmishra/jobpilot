@@ -1,0 +1,9 @@
+# Automatic HTTPS (Let's Encrypt) for PUBLIC_HOST, reverse-proxied to the JobPilot container.
+{$PUBLIC_HOST} {
+	encode gzip
+	header Strict-Transport-Security "max-age=31536000"
+	request_body {
+		max_size 20MB
+	}
+	reverse_proxy app:8000
+}

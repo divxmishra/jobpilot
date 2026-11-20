@@ -1,0 +1,23 @@
+# Render Blueprint (fallback deployment). Free web service built from the Dockerfile.
+# NOTE: Render's free plan has no persistent disk — data resets on redeploy/restart.
+services:
+  - type: web
+    name: jobpilot
+    runtime: docker
+    plan: free
+    region: singapore
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: JOBPILOT_ENV
+        value: production
+      - key: JOBPILOT_DATA_DIR
+        value: /data
+      - key: JOBPILOT_PERSISTENT_STORAGE
+        value: "0"
+      - key: JOBPILOT_SECRET_KEY
+        generateValue: true
+      - key: JOBPILOT_PASSWORD
+        sync: false
+      - key: AI_PROVIDER
+        value: none

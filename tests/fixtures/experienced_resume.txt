@@ -1,0 +1,30 @@
+PRIYA SHARMA
+Senior Backend Engineer
+Bengaluru, India | priya.sharma@example.com | +91 98765 43210 | linkedin.com/in/priya-example | github.com/priya-example
+
+SUMMARY
+Backend engineer with experience building Python services and data pipelines.
+
+EXPERIENCE
+Senior Software Engineer | Acme Technologies Pvt Ltd | Bengaluru    Jan 2021 – Present
+• Designed REST APIs in Python and FastAPI serving 2M requests per day
+• Migrated reporting workloads from MySQL to PostgreSQL
+• Containerised services with Docker and deployed on AWS using GitHub Actions
+Software Engineer — Globex Solutions, Pune    Jul 2018 – Dec 2020
+• Built Django applications and Celery workers
+• Wrote unit tests with pytest and improved CI/CD pipelines
+
+EDUCATION
+B.Tech in Computer Science, Vellore Institute of Technology, 2014 – 2018, CGPA 8.4/10
+
+SKILLS
+Languages: Python, SQL, JavaScript
+Frameworks: Django, FastAPI, React
+Tools: Docker, AWS, Git, Linux, Redis
+
+PROJECTS
+Expense Tracker — personal finance app
+• Built with React and Node.js, deployed on Render
+
+CERTIFICATIONS
+AWS Certified Developer – Associate (2022)

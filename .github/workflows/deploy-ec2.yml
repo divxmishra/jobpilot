@@ -1,0 +1,35 @@
+name: Deploy to EC2
+# Runs after CI succeeds on main. Requires repository secrets EC2_HOST and EC2_SSH_KEY
+# (and optionally EC2_USER, default "ubuntu"). Skips cleanly when they are not configured.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: echo "ready=$([ -n "$HOST" ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      - name: Deploy over SSH
+        if: steps.cfg.outputs.ready == 'yes'
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER_NAME: ${{ secrets.EC2_USER || 'ubuntu' }}
+          KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          install -m 600 /dev/null key.pem && printf '%s\n' "$KEY" > key.pem
+          ssh -i key.pem -o StrictHostKeyChecking=accept-new "$USER_NAME@$HOST" 'bash /opt/jobpilot/deploy/update.sh'
+          rm -f key.pem
+      - name: Health check
+        if: steps.cfg.outputs.ready == 'yes'
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          for i in $(seq 1 20); do curl -fsS "https://${HOST//./-}.sslip.io/api/health" && exit 0; sleep 6; done; exit 1

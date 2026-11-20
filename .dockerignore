@@ -1,0 +1,14 @@
+.git
+.venv
+data
+test-results
+**/__pycache__
+**/*.pyc
+.env
+.env.*
+!.env.example
+tests
+docs
+*.md
+!README.md
+scripts/*.ps1

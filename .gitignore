@@ -1,0 +1,28 @@
+# --- secrets: never commit ---
+.env
+.env.*
+!.env.example
+.deploy-secrets*
+*.pem
+*.key
+
+# --- private user data (resumes, database, browser profile, cookies, logs) ---
+data/
+*.db
+*.db-wal
+*.db-shm
+browser-profile/
+*.sqlite
+
+# --- build / tooling ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+test-results/
+e2e-shots/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

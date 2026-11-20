@@ -1,0 +1,13 @@
+# JobPilot server dependencies (pinned). Used by Docker, Render and local installs.
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.20
+pydantic==2.10.4
+httpx==0.28.1
+beautifulsoup4==4.12.3
+pypdf==5.1.0
+pypdfium2==4.30.0
+python-docx==1.1.2
+PyYAML==6.0.2
+xhtml2pdf==0.2.16
+itsdangerous==2.2.0
