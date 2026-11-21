@@ -367,5 +367,7 @@ mark.kw-miss { background: var(--danger-soft); color: inherit; border-radius: 3p
   .table.responsive td::before { content: attr(data-label); color: var(--text-3); font-weight: 600; }
   .timeline li { grid-template-columns: 1fr; gap: 2px; }
   dialog.drawer .modal { width: 100vw; }
-  .btn { min-height: 40px; }
+  .btn { min-height: 40px; white-space: normal; text-align: center; height: auto; padding-top: 6px; padding-bottom: 6px; }
+  .content { overflow-wrap: anywhere; }
+  .badge { white-space: normal; }
 }

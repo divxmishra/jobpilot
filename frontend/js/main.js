@@ -263,7 +263,10 @@ async function route() {
       isCurrent: () => token === state.navToken };
     const cleanup = await mod.render(ctx);
     if (token === state.navToken) state.cleanup = typeof cleanup === "function" ? cleanup : null;
-    contentEl.focus({ preventScroll: true });
+    // Move focus to the new page only on in-app navigation; on first load keep the
+    // natural tab order so "Skip to content" is the first stop.
+    if (state.navigated) contentEl.focus({ preventScroll: true });
+    state.navigated = true;
     window.scrollTo(0, 0);
   } catch (e) {
     if (token !== state.navToken) return;

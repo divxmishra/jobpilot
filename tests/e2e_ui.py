@@ -277,7 +277,7 @@ def main():
 
         @step("Mobile layout: nav collapses, no horizontal overflow")
         def s21():
-            m = browser.new_context(viewport={"width": 390, "height": 844}, storage_state=ctx.storage_state())
+            m = browser.new_context(viewport={"width": 340, "height": 740}, storage_state=ctx.storage_state())
             mp = m.new_page()
             mp.on("pageerror", lambda e: errors.append(f"mobile pageerror: {e}"))
             for path in ["/", "/discover", "/applications", "/resumes", "/settings", "/analytics", "/setup"]:
