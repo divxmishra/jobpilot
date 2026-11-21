@@ -7,6 +7,7 @@ Exits non-zero on any failed step or browser console error.
 from __future__ import annotations
 
 import io
+import os
 import re
 import sys
 from pathlib import Path
@@ -46,6 +47,9 @@ def step(name):
             except Exception as e:
                 results.append((name, False, str(e)[:300]))
                 print(f"FAIL  {name}: {str(e)[:300]}")
+                if os.environ.get("GITHUB_ACTIONS"):
+                    msg = str(e)[:400].replace(chr(10), " ").replace("%", "%25")
+                    print(f"::error title=E2E {name}::{msg}")
         return run
     return deco
 
@@ -301,6 +305,8 @@ def main():
     print(f"\n{sum(r[1] for r in results)}/{len(results)} steps passed; {len(real_errors)} console errors")
     for e in real_errors[:20]:
         print("  console:", e[:300])
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error title=E2E console error::{e[:300]}")
     sys.exit(0 if all(r[1] for r in results) and not real_errors else 1)
 
 
