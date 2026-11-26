@@ -56,7 +56,28 @@ PDF + PNG preview rendered inside Linux, browser-prep correctly disabled server-
 | Remotive API | 15 postings listed |
 | AI providers | Not tested live — no API key configured (optional). Deterministic mode verified. |
 
+## CI (GitHub Actions)
+
+`CI` workflow green on `main` (commit 528ad62): backend + safety tests, UI end-to-end journeys
+(Ubuntu runner), Docker build. Earlier CI runs exposed two real defects (first-load focus order,
+mobile button overflow with wider Linux fonts) which were fixed; the UI test now runs at 340 px.
+
+## Live deployment (Render) — `tests/verify_live.py`: **14/14 checks passed**
+
+https://jobpilot-xg5p.onrender.com — health OK, production mode with sign-in required, access
+password configured, API and profile data return 401 without a session, CSRF header enforced, wrong
+password rejected, SPA + static assets + deep links served, CSP / nosniff / frame-deny headers,
+API docs hidden, HTTP→HTTPS redirect. Live sign-in page verified in headless Chromium (no page errors).
+Signed-in journeys on the live site were not automated because the access password is known only to you.
+
+## AWS EC2 attempt (not completed)
+
+Instance `JobPilot-Server` (t3.micro, ap-south-1) was running and answered on ports 80/443, but
+SSH (22) timed out on 5 attempts even with the rule opened to 0.0.0.0/0 — consistent with a subnet
+network ACL or the rule being on a different security group. Per your instruction, deployment
+fell back to Render. The EC2 path (`docker-compose.yml`, `deploy/ec2-setup.sh`, Caddy HTTPS,
+`deploy-ec2.yml` workflow) is ready for a later retry.
+
 ## Pending / not automatically verifiable
 
 - Real Playwright prefill against third-party application portals (deliberately not exercised against live employer sites; verified on a local test form).
-- Hosted deployment verification — see the final delivery notes.

@@ -14,6 +14,11 @@ submission to you.
 > The original handoff package was not available in this workspace, so these two documents
 > served as the requirements.
 
+## Live deployment
+
+**https://jobpilot-xg5p.onrender.com** (Render free plan, auto-deploys from `main`; sign in with the access password you set in Render).
+The free plan sleeps after ~15 minutes idle (first request takes ~1 minute) and has **no persistent disk** — export your data from Settings regularly, or use the EC2 path below for persistence.
+
 ## Features
 
 | Area | What you get |
