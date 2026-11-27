@@ -37,7 +37,7 @@ def main() -> int:
                 break
             except OSError:
                 time.sleep(0.5)
-        return subprocess.call([sys.executable, str(ROOT / "tests" / "e2e_ui.py"), base, shots])
+        return subprocess.call([sys.executable, str(ROOT / "tests" / "e2e_ui.py"), base, shots], env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     finally:
         srv.terminate()
         srv.wait(10)

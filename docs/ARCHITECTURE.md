@@ -63,3 +63,25 @@ charts with table view and "not enough data" state) · `js/pages/*` (one module 
 | Honest ATS score | `resume_engine.ats_score` | `test_ats_score_honest_below_target` |
 | Never submits / sends | `browser_prep.prefill` (fill/attach only), outreach statuses | `test_browser_safety.py`, `test_outreach_never_sent…` |
 | Master CV immutable | read-only uploads, verified versions locked | `test_profile_requires_explicit_confirmation…`, `test_master_profile_unchanged…` |
+
+## Multi-user SaaS layer (v2)
+
+| Module | Responsibility |
+|---|---|
+| `context.py` | Per-request user context, set only by the auth middleware from the server-side session and carried into background tasks |
+| `services/auth.py` | scrypt password hashing, sessions (hashed tokens, idle and absolute expiry), single-use tokens, TOTP for staff, brute-force limits, Google OAuth, one-time owner bootstrap |
+| `services/entitlements.py` | System config (maintenance, flags, trial, rate limits, analytics level, backups), plans, trials, subscriptions, overrides, usage counters, coupons. `require_feature()` / `consume()` return HTTP 402 with an upgrade path. |
+| `services/tracking.py` | Allow-listed product analytics (no sensitive content) and the admin audit log |
+| `services/roadmap.py` | Career Roadmap aggregation and job-unlock estimates (from re-running the real evaluation engine) |
+| `services/backups.py` | Encrypted backups to S3/R2 (SigV4, verified against AWS's test vector), debounced and scheduled, with retention and safe startup recovery |
+| `services/emailer.py` | SMTP sender. Disabled until configured, and never pretends to send. |
+| `routers/accounts.py` | Public endpoints, authentication, account, subscription/usage, support, roadmap |
+| `routers/admin.py` | Admin API. Every route depends on staff role + TOTP-elevated session. Support role is read-only. |
+| `migrations/002_multiuser_saas.sql` | Users, sessions, plans, subscriptions, trials, usage, payments, invoices, coupons, activity, admin audit, announcements, support, backups, roadmap. Adds `user_id` to all user-owned tables. Legacy rows are claimed by the owner at bootstrap. |
+
+**Isolation rule:** every query on user-owned data includes `user_id = uid()`, and files live under
+`data/users/<id>/`. A missing row for another user returns 404, so other users' data is never revealed.
+`tests/test_saas.py::test_user_data_isolation` covers this.
+
+**Frontend:** `index.html` + `js/main.js` serve the public site and the user app (`/app`).
+`admin.html` + `js/admin/*` serve the admin app, which has its own layout and security gate.

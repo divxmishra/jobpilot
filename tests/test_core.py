@@ -59,7 +59,7 @@ def test_profile_requires_explicit_confirmation_and_master_is_immutable(fresh):
     import hashlib
     assert hashlib.sha256(raw).hexdigest() == up["sha256"]
     from app.config import settings
-    assert (settings.data_dir / "cv.md").read_text(encoding="utf-8").startswith("# Priya Sharma")
+    assert (settings.data_dir / "users" / "1" / "cv.md").read_text(encoding="utf-8").startswith("# Priya Sharma")
 
 
 def test_profile_versioning(fresh):
@@ -334,7 +334,10 @@ def test_ai_disabled_without_key_and_budget_caps(fresh, monkeypatch):
     assert fresh.put("/api/settings/ai", json={"monthly_cap_inr": 500}).status_code == 422
     # Call limit pauses AI automatically.
     fresh.put("/api/settings/ai", json={"daily_call_limit": 0})
-    assert ai._budget_ok() is False
+    from app.context import as_user
+    from app.services import auth
+    with as_user(auth.get_user(1)):
+        assert ai._budget_ok() is False
     assert fresh.get("/api/settings").json()["ai"]["paused"] is True
 
 
@@ -359,24 +362,18 @@ def test_csrf_header_required(fresh):
     from fastapi.testclient import TestClient
     from app.main import app
     with TestClient(app) as raw:
-        assert raw.post("/api/discovery/run").status_code == 403
+        assert raw.post("/api/auth/logout").status_code == 403
+        assert raw.get("/api/dashboard").status_code == 401
 
 
-def test_production_requires_password(fresh, monkeypatch):
+def test_production_closes_registration_without_persistent_storage(fresh, monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "env", "production")
-    monkeypatch.setattr(settings, "cookie_secure", True)
-    monkeypatch.setattr(settings, "password", "")
-    assert fresh.get("/api/dashboard").status_code == 503
-    monkeypatch.setattr(settings, "password", "correct horse battery")
-    assert fresh.get("/api/dashboard").status_code == 401
-    assert fresh.post("/api/auth/login", json={"password": "wrong"}).status_code == 401
-    r = fresh.post("/api/auth/login", json={"password": "correct horse battery"})
-    assert r.status_code == 200
-    sc = r.headers["set-cookie"]
-    assert "HttpOnly" in sc and "Secure" in sc and "SameSite=lax" in sc
-    token = sc.split(";")[0].split("=", 1)[1]
-    assert fresh.get("/api/dashboard", headers={"Cookie": f"jobpilot_session={token}"}).status_code == 200
+    monkeypatch.setattr(settings, "persistent_storage", False)
+    cfg = fresh.get("/api/public/config").json()
+    assert cfg["registration_open"] is False
+    r = fresh.post("/api/auth/register", json={"email": "x@example.com", "password": "abc-12345678", "accept_terms": True})
+    assert r.status_code == 403
 
 
 def test_no_secrets_in_frontend():
@@ -390,14 +387,16 @@ def test_discovery_with_no_sources_and_export(fresh):
     z = fresh.get("/api/data/export")
     import zipfile
     names = zipfile.ZipFile(io.BytesIO(z.content)).namelist()
-    assert "jobpilot.db" in names and not any(n.startswith("browser-profile") for n in names)
+    assert "account.json" in names and "records/jobs.json" in names
+    assert not any("jobpilot.db" in n or n.startswith("browser-profile") for n in names)
 
 
 def test_reports_written(fresh):
     setup_profile(fresh, experienced_text())
     job = add_job(fresh, "Senior Backend Engineer", "Initech", JD_SENIOR)
     from app.config import settings
-    rep = (settings.data_dir / "jobs" / job["id"] / "report.md").read_text(encoding="utf-8")
+    owner_dir = settings.data_dir / "users" / "1"
+    rep = (owner_dir / "jobs" / job["id"] / "report.md").read_text(encoding="utf-8")
     assert "Hard eligibility gates" in rep and "Score breakdown" in rep
-    assert (settings.data_dir / "jobs" / job["id"] / "job.json").exists()
+    assert (owner_dir / "jobs" / job["id"] / "job.json").exists()
     assert list((settings.data_dir / "audit").glob("*.jsonl"))

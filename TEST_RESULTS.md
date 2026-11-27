@@ -1,83 +1,49 @@
-# Test results
+# Test results — v2 (multi-user SaaS upgrade)
 
-Run on Windows 11, Python 3.13.7, 2026-11-20. Re-run with `scripts\test.ps1`.
-CI (`.github/workflows/ci.yml`) runs the same suites on every push.
+Run on Windows 11 with Python 3.13 on 2026-11-28. CI (`.github/workflows/ci.yml`) runs the same suites on Ubuntu for every push.
+Re-run locally with `scripts\test.ps1`.
 
-## Automated — backend & safety (`pytest`): **35 passed, 0 failed**
+## Automated backend, safety & SaaS tests (`pytest`): 65 passed, 0 failed
 
 | Area | Tests |
 |---|---|
-| Resume parsing (PDF + DOCX), bad-upload rejection, no invented dates | `test_parse_docx_and_pdf_resume`, `test_rejects_bad_uploads`, `test_never_invents_missing_dates` |
-| Profile verification, immutable master CV, versioning, unverified facts unused | `test_profile_requires_explicit_confirmation_and_master_is_immutable`, `test_profile_versioning`, `test_unverified_facts_are_not_used` |
-| Fresher **and** experienced profiles; no fresher-only hardcoding | `test_experienced_candidate_qualifies_for_senior_role`, `test_fresher_qualifies_for_fresher_role_but_not_senior`, `test_no_fresher_hardcoding_in_source` |
-| Hard gates beat scores; < 85% never recommended; tailoring refused | `test_hard_gate_cannot_be_overridden_by_high_score`, `test_below_threshold_never_recommended` |
-| Threshold change is user-only, logged, re-evaluates | `test_threshold_change_is_user_only_and_reevaluates` |
-| Zero qualifying jobs is valid | `test_zero_qualifying_jobs_is_valid` |
-| Fee red flags + prompt-injection flagged | `test_red_flags_and_injection` |
-| Scores truncated, never rounded up | `test_score_never_rounded_up` |
-| Every resume claim traceable; gaps not claimed | `test_tailored_resume_claims_trace_to_verified_evidence` |
-| ATS score honest (< 95 labelled, components sum) | `test_ats_score_honest_below_target` |
-| Edits can't add skills/metrics; approval blocked | `test_editing_cannot_introduce_unsupported_claims` |
-| PDF/DOCX text extraction + page preview | `test_pdf_docx_text_extraction` |
-| Master profile unchanged by tailoring | `test_master_profile_unchanged_by_tailoring` |
-| Approval → application → status tracking | `test_approval_and_application_tracking` |
-| Outreach never sent; one follow-up; verified needs source | `test_outreach_never_sent_and_single_follow_up` |
-| Extraction: active / expired / closed / 404 / malformed / unreachable | `test_extraction_expiry_and_404` |
-| Manual URL pipeline + dedupe (URL and company/title/location) | `test_manual_url_pipeline_and_dedupe`, `test_dedupe_by_company_title_location` |
-| Missing AI key, budget caps, auto-pause; AI output must quote JD | `test_ai_disabled_without_key_and_budget_caps`, `test_ai_output_must_quote_jd` |
-| Secret redaction, CSRF, production password, no secrets in frontend | `test_secrets_redacted`, `test_csrf_header_required`, `test_production_requires_password`, `test_no_secrets_in_frontend` |
-| Discovery with no sources; data export excludes browser profile; reports written | `test_discovery_with_no_sources_and_export`, `test_reports_written` |
-| **Never auto-submits** (static + behavioural Playwright test on a local form) | `test_browser_safety.py` (2 tests) |
+| Original V1 business rules (unchanged) | 33 tests in `test_core.py`: parsing, verification, fresher vs experienced, hard gates, 85% threshold, zero results, truthfulness, honest ATS, dedupe, expiry, AI budget, red flags, injection, reports, CSRF, no secrets in frontend |
+| Never auto-submits | `test_browser_safety.py` (static + behavioural Playwright) |
+| Authentication | register/login/logout, password rules, scrypt storage, brute-force lockout, session expiry, admin-issued single-use reset link, honest "email not configured" reset, owner bootstrap only once, no self-promotion to admin |
+| Admin access control | user → 403; owner without 2FA → 428; wrong TOTP rejected; support role read-only |
+| User isolation | User B can't view or modify User A's job, resume, PDF, application, profile, upload, activity, subscription or admin APIs |
+| Trials | Starts at profile completion; exactly 30 days; admin extension; expiry by server time → Free plan with data kept and notification sent; trial length configurable for future users |
+| Plans & limits | Daily search limit returns 402 with details; admin override lifts it; automation locked on Free; lifetime grant / revoke; prices set in admin appear publicly; coupon maths; payments disabled; manual verified payment labelled and counted; production closes registration when storage isn't persistent |
+| Analytics | Admin counts match database rows; required events recorded; no resume text or secrets in events; analytics opt-out honoured; funnel separates JobPilot / user / user-reported, with 0 verified outcomes and a causation disclaimer |
+| Notice period & CTC | Immediate-joiner and CTC-below-minimum fail with evidence; warning mode; negotiable handling; missing info → "not stated" (never a failure); validation errors |
+| Career Roadmap | Real aggregation (Kotlin required in 3 of 4 jobs); verified skills never listed as gaps; status updates and validation; history; plan entitlement → 402 |
+| Backups & recovery | Backup created and verified; restore after missing DB (DB + `cv.md` restored); restore after corrupted DB (corrupt copy kept aside); no restore over a valid DB; retention pruning; change-triggered debounce; AES-256-GCM encryption required for cloud; SigV4 matches AWS's published test vector |
+| Health & maintenance | `/health` is minimal and public; maintenance mode blocks users but not staff; account deletion removes data |
 
-## Automated — UI end-to-end (Playwright, headless Chromium): **22/22 steps, 0 console errors**
+## Automated UI journeys (Playwright, headless Chromium): 18/18 steps, 0 console errors
 
-`tests/run_e2e.py` starts a fresh server with an empty data directory and walks the journeys:
-first-run setup → upload DOCX → extraction preview → blocked confirmation → correct & confirm →
-preferences → invalid URL validation → manual job → gate confirmation → qualified → shortlist →
-generate resume (real PDF preview, honest ATS label) → ATS report & keyword map → unsupported edit
-blocks approval → approve truthful version → PDF/DOCX downloads → prepare application → review →
-pause before submission (no submit control) → mark applied by user → all pages render → outreach
-draft approve → activity search → theme persists across reload → keyboard (skip link, `/` search)
-→ mobile 390 px: no horizontal overflow on 7 pages, nav drawer → not-found route.
+1. Landing page (hero, features, pricing showing "To be announced", FAQ, contact)
+2. Synthetic demo, labelled on every tab
+3. `/app` redirects to login
+4. Owner setup → mandatory TOTP enrolment (real codes) → admin overview
+5. All 16 admin sections render; manual backup runs
+6. Admin sets the Basic price and creates an announcement, which shows on the public site
+7. User registers → profile setup
+8. Upload → confirm facts → trial badge appears
+9. Notice period & CTC preferences
+10. Manual job with CTC evidence → gate confirmation → shortlist
+11. Tailored resume with honest ATS label, approve, PDF download
+12. Prepare application → pause before submit → user marks applied
+13. Career Roadmap, Plan & usage, Support ticket, Account
+14. Remaining app pages
+15. A normal user is refused `/admin`
+16. Theme persistence, skip link, `/` search
+17. No horizontal overflow at **340 px** (mobile) and **820 px** (tablet) on 9 pages
+18. 404 page
 
-## Container
-
-`docker build` succeeded. Running container verified: healthy health-check, 401 without login,
-wrong password rejected, Secure session cookie, profile upload → evaluation → tailored resume →
-PDF + PNG preview rendered inside Linux, browser-prep correctly disabled server-side, CSP present.
-
-## Live integrations (manual verification, read-only public APIs)
-
-| Source | Result |
-|---|---|
-| Greenhouse board API | 246 postings listed; single-posting extraction complete; bogus ID → "not_found (404)" |
-| Lever postings API | 307 postings listed |
-| Ashby job-board API | 79 postings listed |
-| Remotive API | 15 postings listed |
-| AI providers | Not tested live — no API key configured (optional). Deterministic mode verified. |
-
-## CI (GitHub Actions)
-
-`CI` workflow green on `main` (commit 528ad62): backend + safety tests, UI end-to-end journeys
-(Ubuntu runner), Docker build. Earlier CI runs exposed two real defects (first-load focus order,
-mobile button overflow with wider Linux fonts) which were fixed; the UI test now runs at 340 px.
-
-## Live deployment (Render) — `tests/verify_live.py`: **14/14 checks passed**
-
-https://jobpilot-xg5p.onrender.com — health OK, production mode with sign-in required, access
-password configured, API and profile data return 401 without a session, CSRF header enforced, wrong
-password rejected, SPA + static assets + deep links served, CSP / nosniff / frame-deny headers,
-API docs hidden, HTTP→HTTPS redirect. Live sign-in page verified in headless Chromium (no page errors).
-Signed-in journeys on the live site were not automated because the access password is known only to you.
-
-## AWS EC2 attempt (not completed)
-
-Instance `JobPilot-Server` (t3.micro, ap-south-1) was running and answered on ports 80/443, but
-SSH (22) timed out on 5 attempts even with the rule opened to 0.0.0.0/0 — consistent with a subnet
-network ACL or the rule being on a different security group. Per your instruction, deployment
-fell back to Render. The EC2 path (`docker-compose.yml`, `deploy/ec2-setup.sh`, Caddy HTTPS,
-`deploy-ec2.yml` workflow) is ready for a later retry.
-
-## Pending / not automatically verifiable
-
-- Real Playwright prefill against third-party application portals (deliberately not exercised against live employer sites; verified on a local test form).
+## Not verified automatically / pending
+- **Google OAuth & SMTP email:** code paths are implemented but not exercised live, because no credentials are configured.
+- **Cloud backup upload to R2/S3:** request signing is verified against AWS's test vector; a live upload is pending credentials. The local backup backend is fully tested.
+- **Render persistence across redeploys:** **not satisfied** on the free plan (no persistent disk). See REQUIRED_USER_ACTIONS §B.
+- **Local Docker run:** the Docker daemon wasn't running on the dev machine. The image build is verified by the CI `docker` job and by Render.
+- **Live production checks:** see the deployment section of the final report.

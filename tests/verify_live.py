@@ -15,24 +15,29 @@ def check(name, cond, detail=""):
     print(f"{'PASS' if cond else 'FAIL'}  {name}  {detail}")
 
 
-with httpx.Client(timeout=60, follow_redirects=False) as c:
-    r = c.get(BASE + "/api/health")
-    check("health endpoint OK", r.status_code == 200 and r.json().get("status") == "ok", r.text[:80])
+with httpx.Client(timeout=90, follow_redirects=False) as c:
+    r = c.get(BASE + "/health")
+    check("minimal /health", r.status_code == 200 and r.json() == {"status": "ok"}, r.text[:80])
     s = c.get(BASE + "/api/session").json()
-    check("production requires sign-in", s.get("auth_required") is True and s.get("environment") == "production", str(s))
-    check("access password configured", s.get("password_configured") is True)
-    check("API protected (401 without session)", c.get(BASE + "/api/dashboard").status_code == 401)
-    check("profile data protected", c.get(BASE + "/api/profile").status_code == 401)
-    check("CSRF header enforced", c.post(BASE + "/api/discovery/run").status_code in (401, 403))
-    bad = c.post(BASE + "/api/auth/login", json={"password": "definitely-wrong"}, headers={"X-Requested-With": "JobPilot"})
-    check("wrong password rejected", bad.status_code == 401, str(bad.status_code))
+    check("anonymous session", s.get("authenticated") is False and "config" in s)
+    cfg = s["config"]
+    check("payments disabled", cfg.get("payments_enabled") is False)
+    check("registration closed while storage is ephemeral", cfg.get("registration_open") is False, str(cfg.get("registration_open")))
+    check("user API protected (401)", c.get(BASE + "/api/dashboard").status_code == 401)
+    check("profile data protected (401)", c.get(BASE + "/api/profile").status_code == 401)
+    check("admin API protected", c.get(BASE + "/api/admin/overview").status_code in (401, 403))
+    check("CSRF header enforced", c.post(BASE + "/api/auth/logout").status_code == 403)
+    bad = c.post(BASE + "/api/auth/login", json={"email": "nobody@example.com", "password": "definitely-wrong"}, headers={"X-Requested-With": "JobPilot"})
+    check("wrong credentials rejected", bad.status_code in (401, 429), str(bad.status_code))
+    plans = c.get(BASE + "/api/public/plans").json()["plans"]
+    check("public plans from database", {p["code"] for p in plans} >= {"free", "basic", "pro"})
     page = c.get(BASE + "/")
     h = page.headers
-    check("SPA served", page.status_code == 200 and "/static/js/main.js" in page.text)
-    check("CSP header", "script-src 'self'" in h.get("content-security-policy", ""))
+    check("landing served", page.status_code == 200 and "/static/js/main.js" in page.text)
+    check("admin app served separately", "/static/js/admin/main.js" in c.get(BASE + "/admin").text)
+    check("CSP + HSTS headers", "script-src 'self'" in h.get("content-security-policy", "") and "max-age" in h.get("strict-transport-security", ""))
     check("nosniff + frame deny", h.get("x-content-type-options") == "nosniff" and h.get("x-frame-options") == "DENY")
     check("static assets", c.get(BASE + "/static/js/main.js").status_code == 200 and c.get(BASE + "/static/css/app.css").status_code == 200)
-    check("deep link served by SPA", c.get(BASE + "/discover").status_code == 200)
     check("API docs hidden in production", c.get(BASE + "/api/docs").status_code in (401, 404))
     http = c.get(BASE.replace("https://", "http://") + "/")
     check("HTTP redirects to HTTPS", http.status_code in (301, 302, 307, 308) and http.headers.get("location", "").startswith("https://"))
