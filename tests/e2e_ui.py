@@ -322,6 +322,18 @@ def main():
                 m.close()
         s_mobile()
 
+        @step("Signed-out screens fit 340 px (login, register, owner setup, admin gate)")
+        def s_mobile_public():
+            m = browser.new_context(viewport={"width": 340, "height": 740})
+            mp = m.new_page()
+            for path in ["/login", "/register", "/setup-owner", "/forgot-password", "/privacy", "/terms"]:
+                mp.goto(BASE + path)
+                mp.wait_for_timeout(500)
+                over = mp.evaluate("document.documentElement.scrollWidth - window.innerWidth")
+                assert over <= 1, f"{path} overflows by {over}px"
+            m.close()
+        s_mobile_public()
+
         @step("Unknown route shows not-found state")
         def s_404():
             page.goto(BASE + "/app/does-not-exist")

@@ -20,7 +20,7 @@ Re-run locally with `scripts\test.ps1`.
 | Backups & recovery | Backup created and verified; restore after missing DB (DB + `cv.md` restored); restore after corrupted DB (corrupt copy kept aside); no restore over a valid DB; retention pruning; change-triggered debounce; AES-256-GCM encryption required for cloud; SigV4 matches AWS's published test vector |
 | Health & maintenance | `/health` is minimal and public; maintenance mode blocks users but not staff; account deletion removes data |
 
-## Automated UI journeys (Playwright, headless Chromium): 18/18 steps, 0 console errors
+## Automated UI journeys (Playwright, headless Chromium): 19/19 steps, 0 console errors
 
 1. Landing page (hero, features, pricing showing "To be announced", FAQ, contact)
 2. Synthetic demo, labelled on every tab
@@ -39,7 +39,8 @@ Re-run locally with `scripts\test.ps1`.
 15. A normal user is refused `/admin`
 16. Theme persistence, skip link, `/` search
 17. No horizontal overflow at **340 px** (mobile) and **820 px** (tablet) on 9 pages
-18. 404 page
+18. Signed-out screens (login, register, owner setup, reset, legal) fit 340 px
+19. 404 page
 
 ## Not verified automatically / pending
 - **Google OAuth & SMTP email:** code paths are implemented but not exercised live, because no credentials are configured.

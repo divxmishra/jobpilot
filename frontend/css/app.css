@@ -500,3 +500,6 @@ mark.kw-miss { background: var(--danger-soft); color: inherit; border-radius: 3p
 }
 .page-actions select, .page-actions input { width: auto; min-width: 0; }
 .page-actions .row { flex-wrap: nowrap; }
+/* centred cards must shrink on small screens (grid tracks otherwise grow to the card width) */
+.auth-wrap, .login-wrap { grid-template-columns: minmax(0, 1fr); justify-items: center; }
+.auth-card, .login-card { width: 100% !important; max-width: 440px; }
