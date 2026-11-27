@@ -19,11 +19,10 @@ services:
         generateValue: true
       - key: JOBPILOT_PASSWORD          # legacy: also accepted as the one-time owner setup secret
         sync: false
-      - key: OWNER_SETUP_TOKEN          # one-time secret to create the owner account at /setup-owner
-        sync: false
       - key: AI_PROVIDER
         value: none
-      # Optional integrations — set in the Render dashboard (never commit values):
+      # Optional — add in the Render dashboard (never commit values):
+      # OWNER_SETUP_TOKEN (one-time owner setup secret; JOBPILOT_PASSWORD also works),
       # GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM,
       # BACKUP_S3_ENDPOINT, BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY_ID, BACKUP_S3_SECRET_ACCESS_KEY, BACKUP_S3_REGION,
       # BACKUP_ENCRYPTION_KEY
