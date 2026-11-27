@@ -49,12 +49,12 @@ export async function render(ctx) {
           if (!(await confirmDialog({ title: "Approve this resume?", message: `You're approving v${r.version} (estimated ATS ${ats.score}/100) for "${r.job.title}". Approval only marks it ready — nothing is sent or submitted.`, confirmLabel: "Approve" }))) return;
           withBusy(e.target, async () => { try { await post(`/api/resumes/${id}/approve`); toast("Resume approved", "success"); ctx.refreshCounts(); load(); } catch (er) { toast(er.message, "error"); } });
         } }, icon("check", 16), "Approve") : null,
-      r.status === "approved" ? h("a", { class: "btn btn-primary", href: `/applications?prepare=${r.job.id}` }, icon("briefcase", 16), "Prepare application") : null,
+      r.status === "approved" ? h("a", { class: "btn btn-primary", href: `/app/applications?prepare=${r.job.id}` }, icon("briefcase", 16), "Prepare application") : null,
     ];
 
     mount(ctx.root,
       pageHead({ title: `${r.job.title} — v${r.version}`, desc: `${r.job.company} · built from verified profile v${r.profile_version}`,
-        crumbs: [{ label: "Resume Studio", href: "/resumes" }, { label: r.job.title, href: `/jobs/${r.job.id}` }, { label: `v${r.version}` }], actions }),
+        crumbs: [{ label: "Resume Studio", href: "/app/resumes" }, { label: r.job.title, href: `/app/jobs/${r.job.id}` }, { label: `v${r.version}` }], actions }),
       h("div", { class: "grid grid-3 mb-4" },
         h("div", { class: "card stat" }, h("span", { class: "label" }, icon("target", 15), "Estimated ATS compatibility"),
           h("span", { class: "value" }, `${ats.score}`, h("span", { class: "small muted" }, " / 100")),
@@ -111,7 +111,7 @@ export async function render(ctx) {
 
     function versionsPanel() {
       return section("Version history", h("ul", { class: "timeline" }, r.versions.map((v) => h("li", null, h("span", { class: "when" }, fmt.dateTime(v.created_at)),
-        h("span", { class: "row" }, v.id === r.id ? h("strong", null, `v${v.version} (viewing)`) : h("a", { href: `/resumes/${v.id}` }, `v${v.version}`),
+        h("span", { class: "row" }, v.id === r.id ? h("strong", null, `v${v.version} (viewing)`) : h("a", { href: `/app/resumes/${v.id}` }, `v${v.version}`),
           badge(v.status), h("span", { class: "small muted" }, `ATS ${v.ats_score}${v.edited ? " · edited by you" : " · generated"}`))))));
     }
 
@@ -144,7 +144,7 @@ export async function render(ctx) {
               const nv = await put(`/api/resumes/${id}`, { content: c });
               dirty = false;
               toast(nv.consistency.ok ? `Saved as v${nv.version} — ATS ${nv.ats_score}` : `Saved as v${nv.version}, but it contains unsupported claims`, nv.consistency.ok ? "success" : "warning");
-              ctx.navigate(`/resumes/${nv.id}?tab=compare`);
+              ctx.navigate(`/app/resumes/${nv.id}?tab=compare`);
             } catch (er) { toast(er.message, "error"); }
           }) }, icon("check", 16), "Save as new version & re-score"))));
       rerender();

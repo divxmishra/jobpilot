@@ -12,7 +12,7 @@ export async function render(ctx) {
   if (!TABS.some(([k]) => k === tab)) tab = "preferences";
   const body = h("div");
   const tabBar = h("div", { class: "tabs", role: "tablist" });
-  const paintTabs = () => { clear(tabBar); TABS.forEach(([k, l]) => tabBar.append(h("button", { role: "tab", "aria-selected": String(tab === k), onclick: () => { tab = k; history.replaceState({}, "", `/settings#${k}`); paintTabs(); paint(); } }, l))); };
+  const paintTabs = () => { clear(tabBar); TABS.forEach(([k, l]) => tabBar.append(h("button", { role: "tab", "aria-selected": String(tab === k), onclick: () => { tab = k; history.replaceState({}, "", `/app/settings#${k}`); paintTabs(); paint(); } }, l))); };
   async function paint() {
     mount(body, loading(3));
     try { mount(body, await ({ preferences: prefsTab, sources: sourcesTab, ai: aiTab, appearance: appearanceTab, data: dataTab }[tab])()); }
@@ -37,6 +37,11 @@ export async function render(ctx) {
       match_threshold: h("input", { type: "number", min: 50, max: 100, step: 1, value: p.match_threshold }),
       near_match_margin: h("input", { type: "number", min: 0, max: 30, value: p.near_match_margin }),
       max_job_age_days: h("input", { type: "number", min: 1, max: 365, value: p.max_job_age_days }),
+      notice_period: h("select", null, [["", "Not set"], ["immediate", "Immediate"], ["15", "15 days"], ["30", "30 days"], ["60", "60 days"], ["90", "90 days"], ["negotiable", "Negotiable"]]
+        .map(([v, l]) => h("option", { value: v, selected: (p.notice_period || "") === v }, l))),
+      expected_ctc_lpa: h("input", { type: "number", min: 0, max: 1000, step: "0.1", value: p.expected_ctc_lpa ?? "", placeholder: "e.g. 18" }),
+      min_ctc_lpa: h("input", { type: "number", min: 0, max: 1000, step: "0.1", value: p.min_ctc_lpa ?? "", placeholder: "e.g. 15" }),
+      salary_mismatch_mode: h("select", null, [["hard", "Exclude the job (hard requirement)"], ["warning", "Only warn me"]].map(([v, l]) => h("option", { value: v, selected: p.salary_mismatch_mode === v }, l))),
     };
     const checks = (key, opts) => h("div", { class: "row", role: "group", "aria-label": key }, opts.map(([v, l]) => h("label", { class: "check" },
       h("input", { type: "checkbox", value: v, "data-group": key, checked: (p[key] || []).includes(v) }), l)));
@@ -52,6 +57,11 @@ export async function render(ctx) {
         h("div", { class: "field full" }, "Seniority (leave all unticked for any)", checks("seniority", [["intern", "Intern"], ["entry", "Entry"], ["mid", "Mid"], ["senior", "Senior"], ["lead", "Lead / staff"], ["director", "Director"]])),
         lab("salary_min", "Minimum salary", "Jobs stating a lower maximum fail the salary gate. Unstated salaries are never guessed."), lab("salary_currency", "Currency"),
         h("div", { class: "field full" }, flag("willing_to_relocate", "I'm willing to relocate", p.willing_to_relocate)))),
+      section("Notice period & CTC (India)", h("div", { class: "form-grid" },
+        lab("notice_period", "Your notice period", "Compared with explicit employer requirements only"), lab("salary_mismatch_mode", "If a job pays below your minimum"),
+        lab("expected_ctc_lpa", "Expected CTC (LPA)", "Lakh rupees per annum"), lab("min_ctc_lpa", "Minimum acceptable CTC (LPA)", "Leave empty to skip the CTC check"),
+        h("div", { class: "field full" }, flag("ctc_negotiable", "My salary expectation is negotiable", p.ctc_negotiable)),
+        h("p", { class: "xs muted full" }, "Missing or vague salary/notice information in a posting is marked “Not stated” — never treated as a failure or guessed."))),
       section("Exclusions (hard gates)", h("div", { class: "form-grid" },
         lab("excluded_companies", "Excluded employers"), lab("excluded_keywords", "Excluded keywords"),
         h("div", { class: "field full" }, "Always reject postings that…",
@@ -76,6 +86,8 @@ export async function render(ctx) {
             excluded_keywords: F.excluded_keywords.value, match_threshold: F.match_threshold.value, near_match_margin: F.near_match_margin.value, max_job_age_days: F.max_job_age_days.value,
             work_modes: groups("work_modes"), employment_types: groups("employment_types"), seniority: groups("seniority"),
             willing_to_relocate: fl("willing_to_relocate"), allow_follow_up: fl("allow_follow_up"),
+            notice_period: F.notice_period.value || null, expected_ctc_lpa: F.expected_ctc_lpa.value === "" ? null : F.expected_ctc_lpa.value,
+            min_ctc_lpa: F.min_ctc_lpa.value === "" ? null : F.min_ctc_lpa.value, ctc_negotiable: fl("ctc_negotiable"), salary_mismatch_mode: F.salary_mismatch_mode.value,
             exclusions: { fees: fl("ex_fees"), unpaid: fl("ex_unpaid"), commission_only: fl("ex_commission_only"), suspicious_data: fl("ex_suspicious_data"), unverifiable: fl("ex_unverifiable") },
           };
           if (!body.work_modes.length) { mount(err, callout("danger", "Select at least one work mode.")); return; }
@@ -207,7 +219,7 @@ export async function render(ctx) {
         h("button", { class: "btn btn-danger", style: { alignSelf: "flex-start" }, onclick: async () => {
           const ok = await confirmDialog({ title: "Delete all data?", message: "This cannot be undone. Export first if you want a copy.", confirmLabel: "Delete everything", danger: true, typed: "DELETE ALL MY DATA" });
           if (!ok) return;
-          try { await post("/api/data/delete-all", { confirm: "DELETE ALL MY DATA" }); toast("All data deleted", "success"); ctx.navigate("/setup"); ctx.refreshCounts(); } catch (e) { toast(e.message, "error"); }
+          try { await post("/api/data/delete-all", { confirm: "DELETE ALL MY DATA" }); toast("All data deleted", "success"); ctx.navigate("/app/setup"); ctx.refreshCounts(); } catch (e) { toast(e.message, "error"); }
         } }, icon("trash", 16), "Delete all my data"))));
   }
 }

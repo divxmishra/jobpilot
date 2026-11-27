@@ -13,6 +13,7 @@ const STATUS = {
   prepared: ["Prepared", "b-info", "briefcase"], applied: ["Applied (user-confirmed)", "b-brand", "check"], interview: ["Interview", "b-success", "users"],
   offer: ["Offer", "b-success", "checkCircle"], rejected: ["Rejected", "b-danger", "xCircle"], withdrawn: ["Withdrawn", "b-neutral", "x"],
   pass: ["Passed", "b-success", "check"], fail: ["Failed", "b-danger", "xCircle"], needs_verification: ["Needs verification", "b-warning", "help"],
+  warning: ["Warning", "b-accent", "alert"], unknown: ["Not stated", "b-neutral", "help"], info: ["Info", "b-info", "info"],
   verified: ["Verified", "b-success", "check"], unverified: ["Unverified", "b-neutral", "help"], uncertain: ["Uncertain", "b-warning", "alert"],
   missing: ["Missing", "b-neutral", "help"], public_unverified: ["Publicly listed · unverified", "b-warning", "globe"], inferred: ["Inferred", "b-neutral", "help"],
   sent_by_user: ["Sent by you", "b-brand", "mail"],
@@ -199,14 +200,14 @@ export function jobNextAction(j) {
 }
 
 export function jobCard(j, { threshold = 85, navigate, actions } = {}) {
-  const open = (e) => { e.preventDefault(); navigate(`/jobs/${j.id}`); };
+  const open = (e) => { e.preventDefault(); navigate(`/app/jobs/${j.id}`); };
   const dupCount = (j.alt_urls || []).length;
   return h("article", { class: "card job-card", "aria-labelledby": `jt-${j.id}` },
     h("div", null,
       h("div", { class: "row", style: { gap: "6px", marginBottom: "4px" } }, badge(j.status, j.status_label), j.page_status && j.page_status !== "active" ? badge(j.page_status) : null,
         dupCount ? h("span", { class: "badge b-outline", title: "Same job found on multiple sources (deduplicated)" }, icon("layers", 12), `Seen on ${dupCount + 1} sources`) : null,
         !j.extraction_complete ? h("span", { class: "badge b-warning" }, icon("alert", 12), "Incomplete extraction") : null),
-      h("a", { href: `/jobs/${j.id}`, id: `jt-${j.id}`, class: "title", onclick: open }, j.title || "Untitled role"),
+      h("a", { href: `/app/jobs/${j.id}`, id: `jt-${j.id}`, class: "title", onclick: open }, j.title || "Untitled role"),
       h("div", { class: "company" }, j.company || "Unknown company"),
       h("div", { class: "meta" },
         h("span", null, icon("map", 14), j.location || "Location not stated"),
@@ -220,7 +221,7 @@ export function jobCard(j, { threshold = 85, navigate, actions } = {}) {
       h("span", { class: "grow" }),
       j.source_url ? h("a", { class: "btn btn-sm btn-ghost", href: j.source_url, target: "_blank", rel: "noopener noreferrer" }, icon("external", 14), "Source") : null,
       actions || null,
-      h("a", { class: "btn btn-sm", href: `/jobs/${j.id}`, onclick: open }, "View details")));
+      h("a", { class: "btn btn-sm", href: `/app/jobs/${j.id}`, onclick: open }, "View details")));
 }
 
 // ---------------------------------------------------------------- score breakdown

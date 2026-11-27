@@ -1,12 +1,15 @@
 // API client: one place for fetch, auth handling, errors and task polling.
 
 export class ApiError extends Error {
-  /** @param {number} status @param {string} message */
-  constructor(status, message) { super(message); this.status = status; }
+  /** @param {number} status @param {string} message @param {any} [data] */
+  constructor(status, message, data) { super(message); this.status = status; this.data = data; }
 }
 
 let onUnauthorized = () => {};
+let onLimit = () => {};
 export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
+/** Called when the server says a plan limit or locked feature blocked the request (HTTP 402). */
+export function setLimitHandler(fn) { onLimit = fn; }
 
 /**
  * @param {string} path
@@ -24,12 +27,13 @@ export async function api(path, opts = {}) {
     if (e.name === "AbortError") throw e;
     throw new ApiError(0, navigator.onLine ? "Cannot reach the JobPilot server. Is it running?" : "You appear to be offline.");
   }
-  if (res.status === 401 && !path.startsWith("/api/auth")) { onUnauthorized(); throw new ApiError(401, "Please sign in"); }
+  if (res.status === 401 && !path.startsWith("/api/auth") && path !== "/api/session") { onUnauthorized(); throw new ApiError(401, "Please sign in"); }
   const ct = res.headers.get("content-type") || "";
   const data = ct.includes("application/json") ? await res.json().catch(() => null) : await res.text();
   if (!res.ok) {
     const msg = (data && data.detail) ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)) : `Request failed (${res.status})`;
-    throw new ApiError(res.status, msg);
+    if (res.status === 402) onLimit(data);
+    throw new ApiError(res.status, msg, data);
   }
   return data;
 }
@@ -50,7 +54,7 @@ export function upload(path, file, onProgress) {
     xhr.onload = () => {
       let data = null; try { data = JSON.parse(xhr.responseText); } catch { /* not json */ }
       if (xhr.status >= 200 && xhr.status < 300) resolve(data);
-      else { if (xhr.status === 401) onUnauthorized(); reject(new ApiError(xhr.status, data?.detail || `Upload failed (${xhr.status})`)); }
+      else { if (xhr.status === 401) onUnauthorized(); if (xhr.status === 402) onLimit(data); reject(new ApiError(xhr.status, data?.detail || `Upload failed (${xhr.status})`, data)); }
     };
     xhr.onerror = () => reject(new ApiError(0, "Network error during upload"));
     xhr.send(form);

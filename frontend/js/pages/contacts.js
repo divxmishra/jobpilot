@@ -29,16 +29,16 @@ export async function render(ctx) {
             { key: "company", label: "Company" },
             { key: "verification", label: "Verification", render: (c) => badge(c.verification) },
             { key: "source_label", label: "Source", render: (c) => c.source_url ? h("a", { href: c.source_url, target: "_blank", rel: "noopener noreferrer", onclick: (e) => e.stopPropagation() }, c.source_label || "Link") : (c.source_label || "—") },
-            { key: "job_title", label: "Job", render: (c) => c.job_id ? h("a", { href: `/jobs/${c.job_id}`, onclick: (e) => e.stopPropagation() }, c.job_title) : "—" },
+            { key: "job_title", label: "Job", render: (c) => c.job_id ? h("a", { href: `/app/jobs/${c.job_id}`, onclick: (e) => e.stopPropagation() }, c.job_title) : "—" },
           ] })),
         section("Message drafts", data.drafts.length ? h("div", { class: "stack" }, data.drafts.map((d) => h("button", { class: "card card-pad", style: { textAlign: "left", cursor: "pointer", font: "inherit", color: "inherit" }, onclick: () => draftEditor(d) },
           h("div", { class: "row-between" }, h("strong", null, kinds[d.kind]), badge(d.status === "draft" ? "draft" : d.status, d.status === "draft" ? "Draft — needs approval" : undefined)),
           h("div", { class: "small text-2" }, [d.contact_name, d.job_title && `${d.job_title} — ${d.job_company}`].filter(Boolean).join(" · ") || "General"),
           h("div", { class: "xs muted" }, `Updated ${fmt.ago(d.updated_at)}`))))
           : emptyState({ icon: "mail", title: "No drafts", body: "Create a referral request, recruiter email or connection message draft." }))));
-    if (jobFilter) { draftDialog(jobFilter); history.replaceState({}, "", "/contacts"); }
+    if (jobFilter) { draftDialog(jobFilter); history.replaceState({}, "", "/app/contacts"); }
     const openDraft = Number(ctx.query.get("draft"));
-    if (openDraft) { const d = data.drafts.find((x) => x.id === openDraft); if (d) draftEditor(d); history.replaceState({}, "", "/contacts"); }
+    if (openDraft) { const d = data.drafts.find((x) => x.id === openDraft); if (d) draftEditor(d); history.replaceState({}, "", "/app/contacts"); }
   };
 
   function contactDialog(c = {}) {

@@ -94,7 +94,7 @@ export async function render(ctx, { fixedView } = {}) {
         urlInput.value = "";
         mount(urlStatus, callout(res.status === "qualified" ? "success" : "info", h("div", { class: "row-between" },
           h("span", null, res.duplicate ? "Already known (duplicate) — updated its sources. " : "Processed. ", "Result: ", h("strong", null, res.status_label)),
-          h("a", { class: "btn btn-sm", href: `/jobs/${res.job_id}` }, "Open job"))));
+          h("a", { class: "btn btn-sm", href: `/app/jobs/${res.job_id}` }, "Open job"))));
         loadList();
       } catch (er) { mount(urlStatus, callout("danger", `${er.message} You can enter the job details manually instead.`)); }
     });
@@ -129,7 +129,7 @@ export async function render(ctx, { fixedView } = {}) {
       try {
         const r = await post("/api/jobs/manual", body);
         m.close(); toast(r.duplicate ? "This job was already known" : `Job added: ${r.job.status_label}`, "success");
-        ctx.navigate(`/jobs/${r.job.id}`);
+        ctx.navigate(`/app/jobs/${r.job.id}`);
       } catch (er) { toast(er.message, "error"); }
     }));
   }
@@ -143,7 +143,7 @@ export async function render(ctx, { fixedView } = {}) {
       const last = r.runs[0];
       mount(runStatus,
         h("div", { class: "small text-2" }, r.schedule.enabled ? `Scheduled daily at ${String(r.schedule.hour).padStart(2, "0")}:00 (while JobPilot is running).` : "Scheduled discovery is off.",
-          " ", h("a", { href: "/settings#sources" }, "Manage sources")),
+          " ", h("a", { href: "/app/settings#sources" }, "Manage sources")),
         last ? h("div", { class: "small" }, `Last run ${fmt.ago(last.started_at)} (${last.trigger}): `, h("strong", null, last.status), last.stats ? ` · ${last.stats.listed ?? 0} listed, ${last.stats.new ?? 0} new, ${last.stats.qualified ?? 0} newly qualifying, ${last.stats.duplicates ?? 0} duplicates` : "",
           last.stats?.errors?.length ? h("div", { class: "xs", style: { color: "var(--danger)" } }, `${last.stats.errors.length} source error(s) — see Activity & Logs`) : null) : h("div", { class: "small muted" }, "Discovery has never run."));
       if (r.running) follow(r.running.id);

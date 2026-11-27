@@ -17,11 +17,11 @@ export async function render(ctx) {
         section("Tailored resumes", dataTable({
           rows: rows.map((r) => ({ ...r, label: `${r.title} — ${r.company}` })),
           sortKey: "created_at", sortDir: "desc",
-          onRow: (r) => ctx.navigate(`/resumes/${r.id}`),
+          onRow: (r) => ctx.navigate(`/app/resumes/${r.id}`),
           empty: emptyState({ icon: "file", title: "No tailored resumes yet", body: "Open a qualifying job and choose “Generate tailored resume”. Tailoring is only offered for jobs that pass every hard gate and your match threshold.",
-            action: h("a", { class: "btn btn-primary", href: "/saved" }, "Go to shortlisted jobs") }),
+            action: h("a", { class: "btn btn-primary", href: "/app/saved" }, "Go to shortlisted jobs") }),
           columns: [
-            { key: "label", label: "Job", render: (r) => h("a", { href: `/resumes/${r.id}` }, r.label) },
+            { key: "label", label: "Job", render: (r) => h("a", { href: `/app/resumes/${r.id}` }, r.label) },
             { key: "version", label: "Version", render: (r) => `v${r.version}${r.edited ? " (edited)" : ""}` },
             { key: "status", label: "State", render: (r) => badge(r.status) },
             { key: "ats_score", label: "Est. ATS", render: (r) => h("span", { class: `badge ${r.ats_score >= 95 ? "b-success" : r.ats_score >= 90 ? "b-warning" : "b-neutral"}` }, `${r.ats_score}/100`) },
@@ -32,8 +32,8 @@ export async function render(ctx) {
           section("Master profile", active ? h("div", { class: "stack small" },
             h("div", { class: "row" }, h("span", { class: "badge b-success" }, icon("lock", 12), "Read-only"), `Version v${active.version}`),
             h("p", { class: "text-2" }, "Tailoring never edits your master profile or original resume. To change facts, start a versioned profile update."),
-            h("div", { class: "row" }, h("a", { class: "btn btn-sm", href: "/setup" }, "Open profile"), h("a", { class: "btn btn-sm", href: "/api/profile/cv.md", target: "_blank", rel: "noopener" }, "cv.md")))
-            : callout("info", h("span", null, "No verified profile yet. ", h("a", { href: "/setup" }, "Set it up first.")))),
+            h("div", { class: "row" }, h("a", { class: "btn btn-sm", href: "/app/setup" }, "Open profile"), h("a", { class: "btn btn-sm", href: "/api/profile/cv.md", target: "_blank", rel: "noopener" }, "cv.md")))
+            : callout("info", h("span", null, "No verified profile yet. ", h("a", { href: "/app/setup" }, "Set it up first.")))),
           section("About the ATS score", h("ul", { class: "evidence-list small" },
             h("li", null, "JobPilot's own estimated compatibility score (ats-v1), computed from the text of the actual rendered PDF/DOCX."),
             h("li", null, "Not an employer's ATS score and not a guarantee of passing screening."),

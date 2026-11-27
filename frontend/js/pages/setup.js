@@ -17,6 +17,26 @@ const LISTS = {
 };
 const BASICS = [["name", "Full name"], ["email", "Email"], ["phone", "Phone"], ["location", "Location"], ["headline", "Headline / current title"]];
 
+function noticeCtcCard() {
+  const box = h("div", { class: "stack" }, h("span", { class: "small muted" }, "Loading…"));
+  get("/api/preferences").then((p) => {
+    const np = h("select", { id: "np" }, [["", "Not set"], ["immediate", "Immediate"], ["15", "15 days"], ["30", "30 days"], ["60", "60 days"], ["90", "90 days"], ["negotiable", "Negotiable"]]
+      .map(([v, l]) => h("option", { value: v, selected: (p.notice_period || "") === v }, l)));
+    const exp = h("input", { type: "number", id: "exp-ctc", min: 0, step: "0.1", value: p.expected_ctc_lpa ?? "" });
+    const min = h("input", { type: "number", id: "min-ctc", min: 0, step: "0.1", value: p.min_ctc_lpa ?? "" });
+    const neg = h("input", { type: "checkbox", id: "neg", checked: !!p.ctc_negotiable });
+    const btn = h("button", { class: "btn btn-sm", style: { alignSelf: "flex-start" } }, "Save");
+    btn.addEventListener("click", () => withBusy(btn, async () => {
+      try { await put("/api/preferences", { notice_period: np.value || null, expected_ctc_lpa: exp.value === "" ? null : exp.value, min_ctc_lpa: min.value === "" ? null : min.value, ctc_negotiable: neg.checked }); toast("Notice period & CTC saved", "success"); }
+      catch (e) { toast(e.message, "error"); }
+    }));
+    mount(box, h("div", { class: "form-grid" }, h("label", { class: "field", for: "np" }, "Notice period", np), h("label", { class: "field", for: "exp-ctc" }, "Expected CTC (LPA)", exp),
+      h("label", { class: "field", for: "min-ctc" }, "Minimum acceptable CTC (LPA)", min), h("label", { class: "check", for: "neg" }, neg, "Negotiable")), btn,
+      h("span", { class: "xs muted" }, "Used only against requirements a job states explicitly. More options in Settings → Preferences."));
+  }).catch((e) => mount(box, callout("danger", e.message)));
+  return box;
+}
+
 export async function render(ctx) {
   ctx.setTitle("Profile");
   let dirty = false;
@@ -80,6 +100,7 @@ export async function render(ctx) {
           section("Replace master resume", h("div", { class: "stack" },
             h("p", { class: "small text-2" }, "Uploading a new resume creates a new draft for review. Your current verified profile stays active until you confirm the new one."),
             uploader({ endpoint: "/api/profile/upload", label: "Upload a newer resume", onDone: () => load() }))),
+          section("Notice period & expected CTC", noticeCtcCard()),
           section("Supporting documents", supporting(p)),
           section("Version history", h("ul", { class: "timeline" }, p.versions.map((x) => h("li", null, h("span", { class: "when" }, fmt.date(x.confirmed_at || x.created_at)),
             h("span", null, `v${x.version} `, badge(x.status === "superseded" ? "superseded" : x.status === "verified" ? "verified" : "draft", fmt.cap(x.status)), h("span", { class: "xs muted" }, ` ${x.note || ""}`)))))),
@@ -237,8 +258,9 @@ export async function render(ctx) {
     mount(ctx.root,
       pageHead({ title: draft.note === "Profile update" ? "Update your profile" : "Review your profile",
         desc: "Correct anything wrong, then confirm the facts that are accurate. Only confirmed facts are used for matching and tailoring.",
-        crumbs: [{ label: "Profile", href: "/setup" }, { label: `Draft v${draft.version}` }] }),
+        crumbs: [{ label: "Profile", href: "/app/setup" }, { label: `Draft v${draft.version}` }] }),
       steps(1),
+      h("div", { class: "mb-4" }, section("Notice period & expected CTC (optional)", noticeCtcCard())),
       warnings.length ? h("div", { class: "mb-4" }, callout("warn", h("div", null, h("strong", null, "Extraction notes"), h("ul", { class: "evidence-list" }, warnings.map((w) => h("li", null, w)))))) : null,
       h("div", { class: "card card-pad mb-4", style: { position: "sticky", top: "66px", zIndex: 5 } },
         h("div", { class: "row-between" }, counter,

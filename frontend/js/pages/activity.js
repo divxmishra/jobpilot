@@ -10,7 +10,7 @@ export async function render(ctx) {
   let categories = [];
   const filterHost = h("div", { class: "mb-4" });
 
-  const LINK = { job: (id) => `/jobs/${id}`, resume: (id) => `/resumes/${id}`, application: (id) => `/applications?open=${id}`, outreach: (id) => `/contacts?draft=${id}`, profile_version: () => "/setup" };
+  const LINK = { job: (id) => `/app/jobs/${id}`, resume: (id) => `/app/resumes/${id}`, application: (id) => `/app/applications?open=${id}`, outreach: (id) => `/app/contacts?draft=${id}`, profile_version: () => "/app/setup" };
 
   async function load() {
     mount(listEl, loading(4));

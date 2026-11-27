@@ -31,7 +31,7 @@ export async function render(ctx) {
         ctx.root.prepend(prog.el);
         const done = await waitTask(t.id, prog.update);
         prog.el.remove();
-        if (done.status === "succeeded") { toast(`Draft ready — estimated ATS ${done.result.ats_score}/100`, "success"); ctx.navigate(`/resumes/${done.result.resume_id}`); }
+        if (done.status === "succeeded") { toast(`Draft ready — estimated ATS ${done.result.ats_score}/100`, "success"); ctx.navigate(`/app/resumes/${done.result.resume_id}`); }
         else toast(done.error || `Generation ${done.status}`, done.status === "cancelled" ? "info" : "error");
       } catch (er) { toast(er.message, "error"); }
     }) }, icon("file", 16), "Generate tailored resume"));
@@ -44,7 +44,7 @@ export async function render(ctx) {
       h("a", { class: "btn btn-sm", href: `/api/jobs/${id}/report.md`, target: "_blank", rel: "noopener" }, icon("file", 14), "report.md"),
       h("button", { class: "btn btn-sm btn-danger", onclick: async () => {
         if (await confirmDialog({ title: "Delete this job?", message: "The job, its reports and any tailored resumes and application records for it will be permanently deleted.", confirmLabel: "Delete job", danger: true })) {
-          try { await del(`/api/jobs/${id}`); toast("Job deleted", "success"); ctx.navigate(backUrl("jobs", "/discover")); } catch (e) { toast(e.message, "error"); }
+          try { await del(`/api/jobs/${id}`); toast("Job deleted", "success"); ctx.navigate(backUrl("jobs", "/app/discover")); } catch (e) { toast(e.message, "error"); }
         } } }, icon("trash", 14), "Delete"),
     ];
 
@@ -59,7 +59,7 @@ export async function render(ctx) {
 
     mount(ctx.root,
       pageHead({ title: j.title || "Untitled role", desc: `${j.company || "Unknown company"} · ${j.location || "Location not stated"}`,
-        crumbs: [{ label: "Discover Jobs", href: backUrl("jobs", "/discover") }, { label: j.title || "Job" }], actions }),
+        crumbs: [{ label: "Discover Jobs", href: backUrl("jobs", "/app/discover") }, { label: j.title || "Job" }], actions }),
       h("div", { class: "row mb-4" }, badge(j.status, j.status_label), badge(j.page_status), j.eligibility_result ? badge(j.eligibility_result, `Eligibility: ${fmt.cap(j.eligibility_result).replace("Needs verification", "needs verification")}`) : null,
         (j.alt_urls || []).length ? h("span", { class: "badge b-outline" }, icon("layers", 12), `Deduplicated across ${(j.alt_urls || []).length + 1} sources`) : null),
       h("div", { class: "mb-4" }, callout(j.status === "qualified" || j.status === "shortlisted" ? "success" : j.status === "needs_review" ? "warn" : j.status === "new" ? "info" : "danger",
@@ -88,6 +88,8 @@ export async function render(ctx) {
             fact("Employment type", j.employment_type), fact("Seniority", j.seniority), fact("Salary", j.salary_text || "Not stated (never estimated)"),
             fact("Experience required", req.experience?.min_years != null ? `${req.experience.min_years}${req.experience.max_years ? "–" + req.experience.max_years : "+"} years${req.experience.mandatory ? " (mandatory)" : " (preferred)"}` : "Not stated"),
             fact("Posted", j.posted_at ? fmt.date(j.posted_at) : "Not stated by source"), fact("Last verified", j.verified_at ? fmt.dateTime(j.verified_at) : "Never"),
+            fact("Notice period", req.notice?.status === "explicit" ? (req.notice.max_days === 0 ? "Immediate joining" : `At most ${req.notice.max_days} days`) + (req.notice.mandatory ? " (required)" : " (preferred)") : req.notice?.status === "inferred" ? "Short notice preferred (no number stated)" : "Not stated"),
+            fact("Compensation", req.compensation?.max_inr ? `${req.compensation.min_inr ? (req.compensation.min_inr / 1e5).toFixed(1) + "–" : "up to "}${(req.compensation.max_inr / 1e5).toFixed(1)} LPA` + (req.compensation.negotiable ? " · negotiable" : "") + (req.compensation.structure?.length ? ` · ${req.compensation.structure.join(", ")}` : "") : req.compensation?.status === "unverified" ? "Described vaguely (no figure)" : "Not stated (never estimated)"),
             fact("Extracted", fmt.dateTime(j.extracted_at)), fact("Extraction", j.extraction_complete ? "Complete" : `Incomplete — missing ${(j.missing_fields || []).join(", ")}`))),
           section("Source & company verification", h("div", { class: "stack small" },
             h("div", null, h("div", { class: "xs muted" }, "Source"), SOURCE_TRUST[j.source] || j.source),
@@ -97,14 +99,14 @@ export async function render(ctx) {
             j.apply_url && j.apply_url !== j.source_url ? h("a", { href: j.apply_url, target: "_blank", rel: "noopener noreferrer" }, "Application page") : null,
             (j.alt_urls || []).length ? h("div", null, h("div", { class: "xs muted" }, "Also found at"), h("ul", { class: "evidence-list" }, j.alt_urls.map((u) => h("li", null, h("a", { href: u, target: "_blank", rel: "noopener noreferrer" }, u))))) : null)),
           section("Documents & application", h("div", { class: "stack small" },
-            j.resumes.length ? h("ul", { class: "evidence-list" }, j.resumes.map((r) => h("li", null, h("a", { href: `/resumes/${r.id}` }, `Resume v${r.version}`), " ", badge(r.status), ` ATS ${r.ats_score}`))) : h("span", { class: "muted" },
+            j.resumes.length ? h("ul", { class: "evidence-list" }, j.resumes.map((r) => h("li", null, h("a", { href: `/app/resumes/${r.id}` }, `Resume v${r.version}`), " ", badge(r.status), ` ATS ${r.ats_score}`))) : h("span", { class: "muted" },
               ["qualified", "shortlisted"].includes(j.status) ? "No tailored resume yet." : "Tailoring is available only for qualifying jobs (no tokens or effort spent on others)."),
-            !j.application && j.resumes.some((r) => r.status === "approved") ? h("a", { class: "btn btn-sm btn-primary", href: `/applications?prepare=${id}`, style: { alignSelf: "flex-start" } }, icon("briefcase", 14), "Prepare application") : null,
-            j.application ? h("div", null, "Application: ", h("a", { href: `/applications?open=${j.application.id}` }, "open"), " ", badge(j.application.status)) : null)),
+            !j.application && j.resumes.some((r) => r.status === "approved") ? h("a", { class: "btn btn-sm btn-primary", href: `/app/applications?prepare=${id}`, style: { alignSelf: "flex-start" } }, icon("briefcase", 14), "Prepare application") : null,
+            j.application ? h("div", null, "Application: ", h("a", { href: `/app/applications?open=${j.application.id}` }, "open"), " ", badge(j.application.status)) : null)),
           section("Contacts", h("div", { class: "stack small" },
             j.contacts.length ? j.contacts.map((c) => h("div", null, h("strong", null, c.name), " ", badge(c.verification), c.role ? h("div", { class: "xs muted" }, c.role) : null)) : h("span", { class: "muted" }, "No contacts linked."),
             h("div", { class: "row" }, h("button", { class: "btn btn-sm", onclick: (e) => withBusy(e.currentTarget, async () => { try { const r = await post(`/api/jobs/${id}/find-contacts`); toast(r.message, r.found.length ? "success" : "info"); load(); } catch (er) { toast(er.message, "error"); } }) },
-              icon("search", 14), "Find public contacts in posting"), h("a", { class: "btn btn-sm", href: `/contacts?job=${id}` }, icon("plus", 14), "Add / draft outreach")))),
+              icon("search", 14), "Find public contacts in posting"), h("a", { class: "btn btn-sm", href: `/app/contacts?job=${id}` }, icon("plus", 14), "Add / draft outreach")))),
           section("More actions", h("div", { class: "row" }, more)))));
   };
   await load();

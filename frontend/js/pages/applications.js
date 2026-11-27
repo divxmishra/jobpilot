@@ -24,7 +24,7 @@ export async function render(ctx) {
         body: "Prepare an application from a shortlisted job once its tailored resume is approved. JobPilot never submits anything for you." }),
       columns: [
         { key: "company", label: "Company" },
-        { key: "title", label: "Role", render: (a) => h("a", { href: `/jobs/${a.job_id}`, onclick: (e) => e.stopPropagation() }, a.title) },
+        { key: "title", label: "Role", render: (a) => h("a", { href: `/app/jobs/${a.job_id}`, onclick: (e) => e.stopPropagation() }, a.title) },
         { key: "status", label: "Status", render: (a) => badge(a.status) },
         { key: "source", label: "Source" },
         { key: "created_at", label: "Prepared", render: (a) => fmt.date(a.created_at) },
@@ -36,7 +36,7 @@ export async function render(ctx) {
   async function openDrawer(aid) {
     let a, browser;
     try { [a, browser] = await Promise.all([get(`/api/applications/${aid}`), get("/api/browser/status")]); } catch (e) { toast(e.message, "error"); return; }
-    history.replaceState({}, "", `/applications?open=${aid}`);
+    history.replaceState({}, "", `/app/applications?open=${aid}`);
     const answers = structuredClone(a.answers || []);
     const statusSel = h("select", { id: "app-status" }, ["prepared", "applied", "interview", "offer", "rejected", "withdrawn"].map((s) => h("option", { value: s, selected: a.status === s },
       { prepared: "Prepared", applied: "Applied (I submitted it myself)", interview: "Interview", offer: "Offer", rejected: "Rejected", withdrawn: "Withdrawn" }[s])));
@@ -52,9 +52,9 @@ export async function render(ctx) {
         h("span", { class: "hint" }, x.source), ta);
     });
     const saveBtn = h("button", { class: "btn btn-primary" }, "Save changes");
-    const m = modal({ title: `${a.title} — ${a.company}`, drawer: true, onClose: () => history.replaceState({}, "", "/applications"),
+    const m = modal({ title: `${a.title} — ${a.company}`, drawer: true, onClose: () => history.replaceState({}, "", "/app/applications"),
       body: h("div", { class: "stack" },
-        h("div", { class: "row" }, badge(a.status), h("a", { href: `/jobs/${a.job_id}` }, "Job details"), a.resume_id ? h("a", { href: `/resumes/${a.resume_id}` }, `Resume v${a.resume_version} (ATS ${a.ats_score})`) : null),
+        h("div", { class: "row" }, badge(a.status), h("a", { href: `/app/jobs/${a.job_id}` }, "Job details"), a.resume_id ? h("a", { href: `/app/resumes/${a.resume_id}` }, `Resume v${a.resume_version} (ATS ${a.ats_score})`) : null),
         callout("info", "JobPilot prepares and prefills only. It never clicks Submit, Apply, Send or Confirm. You review and submit personally, then record the status here."),
         h("fieldset", null, h("legend", null, "1. Review prepared data"),
           h("div", { class: "stack" },
@@ -149,6 +149,6 @@ export async function render(ctx) {
   const prep = ctx.query.get("prepare");
   if (prep) {
     try { const a = await post("/api/applications", { job_id: prep }); toast("Application prepared — review it now", "success"); loadList(); ctx.refreshCounts(); openDrawer(a.id); }
-    catch (e) { toast(e.message, "error"); history.replaceState({}, "", "/applications"); }
+    catch (e) { toast(e.message, "error"); history.replaceState({}, "", "/app/applications"); }
   } else if (ctx.query.get("open")) openDrawer(Number(ctx.query.get("open")));
 }
