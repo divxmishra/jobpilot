@@ -8,12 +8,13 @@ import time
 from datetime import date, datetime, timezone
 
 from .. import audit, db
+from ..context import as_user, uid
 from ..config import settings
 from . import job_extract as jx
 from . import net, pipeline, profile_service as ps
 from .textutil import tokens
 
-MAX_PROCESS_PER_RUN = 80
+MAX_PROCESS_PER_RUN = 80  # default; admin-configurable via system settings
 ROLE_STOP = {"senior", "junior", "lead", "staff", "principal", "intern", "associate", "manager", "remote", "hybrid", "india"}
 
 
@@ -97,12 +98,16 @@ def list_source(c: dict) -> tuple[list[dict], str | None]:
 
 
 def run(task=None, trigger: str = "manual") -> dict:
-    run_id = db.execute("INSERT INTO discovery_runs(trigger, status, started_at) VALUES (?,?,?)", (trigger, "running", db.now_iso()))
+    run_id = db.execute("INSERT INTO discovery_runs(trigger, status, started_at, user_id) VALUES (?,?,?,?)", (trigger, "running", db.now_iso(), uid()))
     stats = {"sources": 0, "source_errors": 0, "listed": 0, "skipped_irrelevant": 0, "skipped_old": 0, "new": 0,
              "duplicates": 0, "qualified": 0, "closed_detected": 0, "rechecked": 0, "errors": []}
     audit.log("discovery", "run_started", f"Discovery run started ({trigger})", entity_type="discovery_run", entity_id=run_id)
     try:
-        companies = [c for c in ps.list_companies() if c["enabled"]]
+        from . import entitlements
+        cfg = entitlements.system()["discovery"]
+        allowed_types = set(cfg.get("enabled_source_types") or [])
+        max_per_run = int(cfg.get("max_jobs_per_run") or MAX_PROCESS_PER_RUN)
+        companies = [c for c in ps.list_companies() if c["enabled"] and c["ats"] in allowed_types]
         profile = ps.active_profile()
         vp = ps.verified_view(profile) if profile else {}
         prefs = ps.get_preferences()
@@ -125,17 +130,17 @@ def run(task=None, trigger: str = "manual") -> dict:
             seen_ids = {x.get("external_id") for x in listings if x.get("external_id")}
             # Jobs previously found on this board but no longer listed -> closed.
             if c["ats"] in ("greenhouse", "lever", "ashby"):
-                for old in db.query("SELECT id, external_id, title FROM jobs WHERE source = ? AND company = ? AND page_status = 'active'",
-                                    (c["ats"], c["name"])):
+                for old in db.query("SELECT id, external_id, title FROM jobs WHERE user_id = ? AND source = ? AND company = ? AND page_status = 'active'",
+                                    (uid(), c["ats"], c["name"])):
                     if old["external_id"] and old["external_id"] not in seen_ids:
-                        db.execute("UPDATE jobs SET page_status = 'closed', page_status_detail = ?, verified_at = ?, updated_at = ? WHERE id = ?",
-                                   ("No longer listed on the company's official job board", db.now_iso(), db.now_iso(), old["id"]))
+                        db.execute("UPDATE jobs SET page_status = 'closed', page_status_detail = ?, verified_at = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                                   ("No longer listed on the company's official job board", db.now_iso(), db.now_iso(), old["id"], uid()))
                         stats["closed_detected"] += 1
                         pipeline.evaluate(old["id"])
             for x in listings:
                 if task and task.cancelled():
                     break
-                if processed >= MAX_PROCESS_PER_RUN:
+                if processed >= max_per_run:
                     break
                 if not _relevant(x.get("title") or "", terms):
                     stats["skipped_irrelevant"] += 1
@@ -158,15 +163,15 @@ def run(task=None, trigger: str = "manual") -> dict:
                     audit.log("failure", "processing_error", f"Failed to process '{x.get('title')}': {e}", level="error")
         # Re-check status of recommended / in-review jobs from other sources before they stay recommended.
         if not (task and task.cancelled()):
-            stale = db.query("SELECT id, source_url FROM jobs WHERE status IN ('qualified','shortlisted','needs_review') "
+            stale = db.query("SELECT id, source_url FROM jobs WHERE user_id = ? AND status IN ('qualified','shortlisted','needs_review') "
                              "AND source IN ('career_page','greenhouse','lever','ashby') "
-                             "AND (verified_at IS NULL OR verified_at < datetime('now','-20 hours')) LIMIT 20")
+                             "AND (verified_at IS NULL OR verified_at < datetime('now','-20 hours')) LIMIT 20", (uid(),))
             for j in stale:
                 if task:
                     task.progress(0.85, "Re-checking recommended jobs are still open")
                 ext = jx.extract_url(j["source_url"])
-                db.execute("UPDATE jobs SET page_status = ?, page_status_detail = ?, verified_at = ?, updated_at = ? WHERE id = ?",
-                           (ext["page_status"], ext["page_status_detail"], db.now_iso(), db.now_iso(), j["id"]))
+                db.execute("UPDATE jobs SET page_status = ?, page_status_detail = ?, verified_at = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                           (ext["page_status"], ext["page_status_detail"], db.now_iso(), db.now_iso(), j["id"], uid()))
                 pipeline.evaluate(j["id"])
                 stats["rechecked"] += 1
         status = "cancelled" if task and task.cancelled() else "completed"
@@ -177,8 +182,8 @@ def run(task=None, trigger: str = "manual") -> dict:
                f"{stats['qualified']} newly qualifying, {stats['closed_detected']} closed detected")
         if not companies:
             msg = "Discovery ran but no sources are enabled. Add target companies in Settings → Sources."
-        audit.log("discovery", "run_finished", msg, entity_type="discovery_run", entity_id=run_id, details=stats, notify=True, link="/discover")
-        db.set_setting("last_discovery", {"at": db.now_iso(), "trigger": trigger, "stats": stats})
+        audit.log("discovery", "run_finished", msg, entity_type="discovery_run", entity_id=run_id, details=stats, notify=True, link="/app/discover")
+        db.set_user_setting("last_discovery", {"at": db.now_iso(), "trigger": trigger, "stats": stats})
         return stats
     except Exception as e:
         db.execute("UPDATE discovery_runs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?", (str(e)[:500], db.now_iso(), run_id))
@@ -191,7 +196,7 @@ _stop = threading.Event()
 
 def get_schedule() -> dict:
     s = {"enabled": settings.scheduler_enabled, "hour": settings.discovery_hour}
-    s.update(db.get_setting("schedule", {}) or {})
+    s.update(db.get_user_setting("schedule", {}) or {})
     return s
 
 
@@ -199,14 +204,19 @@ def _scheduler_loop():
     from .. import tasks
     while not _stop.wait(600):
         try:
-            sch = get_schedule()
-            if not sch.get("enabled"):
-                continue
             now = datetime.now()
-            last = db.get_setting("last_scheduled_discovery", None)
-            if now.hour >= int(sch.get("hour", 7)) and last != now.date().isoformat():
-                db.set_setting("last_scheduled_discovery", now.date().isoformat())
-                tasks.submit("discovery", lambda t: run(t, "scheduled"), label="Scheduled discovery")
+            from . import entitlements
+            if not entitlements.flag("discovery"):
+                continue
+            for u in db.query("SELECT * FROM users WHERE status = 'active' AND profile_completed_at IS NOT NULL"):
+                with as_user(u):
+                    sch = get_schedule()
+                    if not sch.get("enabled") or not entitlements.effective(u)["entitlements"].get("automation"):
+                        continue
+                    last = db.get_user_setting("last_scheduled_discovery", None)
+                    if now.hour >= int(sch.get("hour", 7)) and last != now.date().isoformat():
+                        db.set_user_setting("last_scheduled_discovery", now.date().isoformat())
+                        tasks.submit("discovery", lambda t: run(t, "scheduled"), label="Scheduled discovery")
         except Exception as e:  # never kill the loop
             try:
                 audit.log("failure", "scheduler_error", f"Scheduler error: {e}", level="error")

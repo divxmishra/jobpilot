@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 from . import audit, db
+from .context import as_user, current_user, session_id
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="jobpilot-task")
 
@@ -25,15 +26,15 @@ class TaskHandle:
         return bool(r and r["cancel_requested"])
 
 
-def get(tid: str) -> dict | None:
-    t = db.query_one("SELECT * FROM tasks WHERE id = ?", (tid,))
+def get(tid: str, user_id: int | None = None) -> dict | None:
+    t = db.query_one("SELECT * FROM tasks WHERE id = ?" + (" AND user_id = ?" if user_id else ""), (tid, user_id) if user_id else (tid,))
     if t:
         t["result"] = db.jloads(t["result"], None)
     return t
 
 
-def running(kind: str) -> dict | None:
-    return db.query_one("SELECT * FROM tasks WHERE kind = ? AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1", (kind,))
+def running(kind: str, user_id: int | None = None) -> dict | None:
+    return db.query_one("SELECT * FROM tasks WHERE kind = ? AND user_id IS ? AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1", (kind, user_id))
 
 
 def cancel(tid: str) -> dict | None:
@@ -42,16 +43,22 @@ def cancel(tid: str) -> dict | None:
 
 
 def submit(kind: str, fn: Callable[[TaskHandle], dict | None], *, label: str, unique: bool = True, sync: bool = False) -> dict:
+    user = current_user()
     if unique:
-        existing = running(kind)
+        existing = running(kind, user["id"] if user else None)
         if existing:
             return get(existing["id"])
     tid = "t_" + uuid.uuid4().hex[:12]
     now = db.now_iso()
-    db.execute("INSERT INTO tasks(id, kind, status, progress, message, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-               (tid, kind, "queued", 0, f"{label} queued", now, now))
+    sess = session_id()
+    db.execute("INSERT INTO tasks(id, kind, status, progress, message, created_at, updated_at, user_id) VALUES (?,?,?,?,?,?,?,?)",
+               (tid, kind, "queued", 0, f"{label} queued", now, now, user["id"] if user else None))
 
     def run():
+        with as_user(user, sess):
+            _run()
+
+    def _run():
         h = TaskHandle(tid)
         db.execute("UPDATE tasks SET status = 'running', message = ?, updated_at = ? WHERE id = ?", (f"{label} started", db.now_iso(), tid))
         try:

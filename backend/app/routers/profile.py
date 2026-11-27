@@ -7,6 +7,9 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from .. import audit, db, tasks
+from ..context import uid
+from ..files import user_path
+from ..services import entitlements, tracking
 from ..config import settings
 from ..files import data_path
 from ..services import pipeline, profile_service as ps, resume_parser
@@ -40,7 +43,7 @@ def _summary():
     return {
         "active": active, "draft": draft, "versions": ps.list_versions(),
         "experience": ps.experience_summary(vp) if vp else None,
-        "uploads": db.query("SELECT id, kind, filename, size, sha256, created_at FROM uploads ORDER BY created_at DESC"),
+        "uploads": db.query("SELECT id, kind, filename, size, sha256, created_at FROM uploads WHERE user_id = ? ORDER BY created_at DESC", (uid(),)),
     }
 
 
@@ -65,25 +68,30 @@ async def _read_upload(file: UploadFile, allowed: set[str]) -> bytes:
 @router.post("/profile/upload")
 async def upload_resume(file: UploadFile = File(...)):
     data = await _read_upload(file, set(ALLOWED))
+    entitlements.check("storage_mb", max(1, len(data) // (1024 * 1024)))
+    entitlements.consume("resume_analysis")
     try:
         up = ps.save_upload("master_resume", file.filename, data, file.content_type)
     except resume_parser.ParseError as e:
         audit.log("failure", "resume_parse_failed", f"Could not read '{file.filename}': {e}", level="warning")
         raise HTTPException(422, str(e))
     draft = ps.create_draft_from_upload(up["id"])
+    tracking.event("resume_uploaded", feature="profile")
+    tracking.event("resume_analyzed", feature="profile", actor="system")
     return {"upload": {k: up[k] for k in ("id", "filename", "size", "sha256", "created_at")}, "draft": draft}
 
 
 @router.post("/profile/supporting")
 async def upload_supporting(file: UploadFile = File(...), note: str = Form("")):
     data = await _read_upload(file, SUPPORTING)
+    entitlements.check("storage_mb", max(1, len(data) // (1024 * 1024)))
     up = ps.save_upload("supporting", file.filename, data, file.content_type)
     return {k: up[k] for k in ("id", "filename", "size", "created_at")}
 
 
-@router.get("/profile/uploads/{uid}/download")
-def download_upload(uid: int):
-    up = db.query_one("SELECT * FROM uploads WHERE id = ?", (uid,))
+@router.get("/profile/uploads/{upload_id}/download")
+def download_upload(upload_id: int):
+    up = db.query_one("SELECT * FROM uploads WHERE id = ? AND user_id = ?", (upload_id, uid()))
     if not up:
         raise HTTPException(404, "Upload not found")
     return FileResponse(data_path(up["stored_path"]), filename=up["filename"])
@@ -99,9 +107,9 @@ def blank_draft():
              "certifications": [], "achievements": [], "links": [], "work_authorization": {"value": None, "status": "missing"},
              "extraction": {"method": "manual", "warnings": [], "sections_found": []}}
     active = ps.active_profile()
-    vid = db.execute("INSERT INTO profile_versions(version, status, data, parent_id, note, created_at) VALUES (?,?,?,?,?,?)",
+    vid = db.execute("INSERT INTO profile_versions(version, status, data, parent_id, note, created_at, user_id) VALUES (?,?,?,?,?,?,?)",
                      (ps._next_version(), "draft", db.jdumps(active["data"] if active else empty), active["id"] if active else None,
-                      "Manual entry", db.now_iso()))
+                      "Manual entry", db.now_iso(), uid()))
     return ps.get_version(vid)
 
 
@@ -122,7 +130,7 @@ def discard_draft(vid: int):
         raise HTTPException(404, "Version not found")
     if v["status"] != "draft":
         raise HTTPException(409, "Only drafts can be discarded; verified versions are kept for history")
-    db.execute("DELETE FROM profile_versions WHERE id = ?", (vid,))
+    db.execute("DELETE FROM profile_versions WHERE id = ? AND user_id = ?", (vid, uid()))
     audit.log("profile", "draft_discarded", f"Discarded profile draft v{v['version']}")
     return {"ok": True}
 
@@ -131,14 +139,14 @@ def discard_draft(vid: int):
 def confirm(vid: int):
     v = ps.confirm_draft(vid)
     t = None
-    if db.query_one("SELECT COUNT(*) n FROM jobs")["n"]:
+    if db.query_one("SELECT COUNT(*) n FROM jobs WHERE user_id = ?", (uid(),))["n"]:
         t = tasks.submit("reevaluate", pipeline.reevaluate_all, label="Re-evaluating jobs against your updated profile")
     return {"version": v, "task": t}
 
 
 @router.get("/profile/cv.md", response_class=PlainTextResponse)
 def cv_md():
-    p = data_path("cv.md")
+    p = user_path("cv.md")
     if not p.exists():
         raise HTTPException(404, "No verified profile yet")
     return p.read_text(encoding="utf-8")
@@ -155,7 +163,7 @@ def put_prefs(body: Preferences):
     old = ps.get_preferences()
     new = ps.save_preferences(body.model_dump())
     t = None
-    if db.query_one("SELECT COUNT(*) n FROM jobs")["n"] and old != new:
+    if db.query_one("SELECT COUNT(*) n FROM jobs WHERE user_id = ?", (uid(),))["n"] and old != new:
         t = tasks.submit("reevaluate", pipeline.reevaluate_all, label="Re-evaluating jobs against your preferences")
     return {"preferences": new, "task": t}
 
@@ -168,7 +176,7 @@ def import_prefs():
 @router.get("/preferences/profile.yml", response_class=PlainTextResponse)
 def prefs_yml():
     ps.write_profile_yml()
-    return data_path("profile.yml").read_text(encoding="utf-8")
+    return user_path("profile.yml").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------- company registry
@@ -184,7 +192,7 @@ def add_company(c: Company):
 
 @router.put("/companies/{cid}")
 def edit_company(cid: int, c: Company):
-    if not db.query_one("SELECT id FROM companies WHERE id = ?", (cid,)):
+    if not db.query_one("SELECT id FROM companies WHERE id = ? AND user_id = ?", (cid, uid())):
         raise HTTPException(404, "Company not found")
     return ps.upsert_company(c.model_dump(), cid)
 
@@ -203,4 +211,4 @@ def import_companies():
 @router.get("/companies/portals.yml", response_class=PlainTextResponse)
 def portals_yml():
     ps.write_portals_yml()
-    return data_path("portals.yml").read_text(encoding="utf-8")
+    return user_path("portals.yml").read_text(encoding="utf-8")

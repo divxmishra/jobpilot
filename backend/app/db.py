@@ -13,6 +13,8 @@ from .config import settings
 
 _local = threading.local()
 _write_lock = threading.RLock()
+_all_conns: list[sqlite3.Connection] = []
+_all_lock = threading.Lock()
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
@@ -32,11 +34,18 @@ def _connect(path: Path) -> sqlite3.Connection:
 def get_conn() -> sqlite3.Connection:
     conn = getattr(_local, "conn", None)
     path = getattr(_local, "path", None)
+    if conn is not None:
+        try:
+            conn.total_changes  # raises if closed by close_all_connections()
+        except sqlite3.ProgrammingError:
+            conn = None
     if conn is None or path != settings.db_path:
         if conn is not None:
             conn.close()
         settings.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = _connect(settings.db_path)
+        with _all_lock:
+            _all_conns.append(conn)
         _local.conn = conn
         _local.path = settings.db_path
     return conn
@@ -47,6 +56,22 @@ def close_thread_conn() -> None:
     if conn is not None:
         conn.close()
         _local.conn = None
+        with _all_lock:
+            if conn in _all_conns:
+                _all_conns.remove(conn)
+
+
+def close_all_connections() -> None:
+    """Close every thread's connection (used before restoring a database file)."""
+    with _all_lock:
+        conns = list(_all_conns)
+        _all_conns.clear()
+    for c in conns:
+        try:
+            c.close()
+        except sqlite3.Error:
+            pass
+    _local.conn = None
 
 
 @contextmanager
@@ -120,4 +145,20 @@ def set_setting(key: str, value: Any) -> None:
         "INSERT INTO settings(key, value, updated_at) VALUES (?, ?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         (key, jdumps(value), now_iso()),
+    )
+
+
+# ---------------------------------------------------------------- per-user settings
+def get_user_setting(key: str, default: Any = None, user_id: int | None = None) -> Any:
+    from .context import uid
+    r = query_one("SELECT value FROM user_settings WHERE user_id = ? AND key = ?", (user_id or uid(), key))
+    return jloads(r["value"], default) if r else default
+
+
+def set_user_setting(key: str, value: Any, user_id: int | None = None) -> None:
+    from .context import uid
+    execute(
+        "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        (user_id or uid(), key, jdumps(value), now_iso()),
     )

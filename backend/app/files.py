@@ -47,10 +47,16 @@ def data_path(*parts: str) -> Path:
     return p
 
 
-def job_dir(job_id: str) -> Path:
+def user_path(*parts: str, user_id: int | None = None) -> Path:
+    """Private per-user directory: data/users/<id>/... (never shared between accounts)."""
+    from .context import uid
+    return data_path("users", str(int(user_id or uid())), *parts)
+
+
+def job_dir(job_id: str, user_id: int | None = None) -> Path:
     if not SAFE_ID.match(job_id):
         raise ValueError("Invalid job id")
-    return data_path("jobs", job_id)
+    return user_path("jobs", job_id, user_id=user_id)
 
 
 def write_yaml(path: Path, obj: Any, header: str = "") -> None:

@@ -8,6 +8,8 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .. import audit, db, tasks
+from ..context import uid
+from ..services import entitlements, tracking
 from ..files import job_dir
 from ..services import discovery, job_extract, outreach, pipeline
 from ..services import profile_service as ps
@@ -59,7 +61,7 @@ def list_jobs(view: str = "recommended", q: str = "", source: str = "", work_mod
               sort: str = "match", page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
     if view not in VIEWS:
         raise HTTPException(422, f"Unknown view '{view}'")
-    where, params = [VIEWS[view]], []
+    where, params = [VIEWS[view], "user_id = ?"], [uid()]
     if q:
         where.append("(title LIKE ? OR company LIKE ? OR description LIKE ?)")
         params += [f"%{q}%"] * 3
@@ -87,8 +89,8 @@ def list_jobs(view: str = "recommended", q: str = "", source: str = "", work_mod
     for r in rows:
         r["alt_urls"] = db.jloads(r["alt_urls"], [])
         r["status_label"] = pipeline.STATUS_LABELS.get(r["status"], r["status"])
-    counts = {k: db.query_one(f"SELECT COUNT(*) n FROM jobs WHERE {v}")["n"] for k, v in VIEWS.items()}
-    sources = [r["source"] for r in db.query("SELECT DISTINCT source FROM jobs ORDER BY source")]
+    counts = {k: db.query_one(f"SELECT COUNT(*) n FROM jobs WHERE {v} AND user_id = ?", (uid(),))["n"] for k, v in VIEWS.items()}
+    sources = [r["source"] for r in db.query("SELECT DISTINCT source FROM jobs WHERE user_id = ? ORDER BY source", (uid(),))]
     return {"items": rows, "total": total, "page": page, "page_size": page_size, "counts": counts, "sources": sources,
             "threshold": ps.get_preferences()["match_threshold"]}
 
@@ -98,6 +100,8 @@ def submit_url(body: UrlIn):
     url = body.url.strip()
     if not url.lower().startswith(("http://", "https://")):
         raise HTTPException(422, "Please enter a full URL starting with http:// or https://")
+    entitlements.consume("job_search")
+    tracking.event("job_search", feature="jobs", meta={"source": "manual_url"})
 
     def work(t):
         t.progress(0.2, "Fetching and extracting the posting")
@@ -111,6 +115,8 @@ def submit_url(body: UrlIn):
 def manual_job(body: ManualJob):
     if body.url and not body.url.lower().startswith(("http://", "https://")):
         raise HTTPException(422, "Job URL must start with http:// or https://")
+    entitlements.consume("job_search")
+    tracking.event("job_search", feature="jobs", meta={"source": "manual_entry"})
     ext = job_extract.from_manual(body.model_dump())
     job, dup = pipeline.ingest(ext, trigger="manual entry")
     return {"job": pipeline.evaluate(job["id"]), "duplicate": dup}
@@ -121,9 +127,13 @@ def get_job(job_id: str):
     j = pipeline.get_job(job_id)
     if not j:
         raise HTTPException(404, "Job not found")
-    j["resumes"] = db.query("SELECT id, version, status, ats_score, created_at FROM resumes WHERE job_id = ? ORDER BY version DESC", (job_id,))
-    j["application"] = db.query_one("SELECT id, status FROM applications WHERE job_id = ? ORDER BY id DESC LIMIT 1", (job_id,))
-    j["contacts"] = db.query("SELECT * FROM contacts WHERE job_id = ?", (job_id,))
+    if not j.get("viewed_at"):
+        entitlements.consume("job_view")
+        db.execute("UPDATE jobs SET viewed_at = ? WHERE id = ? AND user_id = ?", (db.now_iso(), job_id, uid()))
+        tracking.event("job_viewed", feature="jobs")
+    j["resumes"] = db.query("SELECT id, version, status, ats_score, created_at FROM resumes WHERE job_id = ? AND user_id = ? ORDER BY version DESC", (job_id, uid()))
+    j["application"] = db.query_one("SELECT id, status FROM applications WHERE job_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1", (job_id, uid()))
+    j["contacts"] = db.query("SELECT * FROM contacts WHERE job_id = ? AND user_id = ?", (job_id, uid()))
     return j
 
 
@@ -135,13 +145,15 @@ def decide(job_id: str, body: Decision):
     if body.decision == "shortlist":
         if j["status"] != "qualified":
             raise HTTPException(409, "Only qualifying jobs (all hard gates passed and match ≥ threshold) can be shortlisted.")
-        db.execute("UPDATE jobs SET decision = 'shortlisted', status = 'shortlisted', updated_at = ? WHERE id = ?", (db.now_iso(), job_id))
+        entitlements.check("saved_jobs")
+        db.execute("UPDATE jobs SET decision = 'shortlisted', status = 'shortlisted', updated_at = ? WHERE id = ? AND user_id = ?", (db.now_iso(), job_id, uid()))
+        tracking.event("job_shortlisted", feature="jobs")
         msg = f"User shortlisted '{j['title']}' at {j['company']}"
     elif body.decision == "dismiss":
-        db.execute("UPDATE jobs SET decision = 'dismissed', status = 'dismissed', updated_at = ? WHERE id = ?", (db.now_iso(), job_id))
+        db.execute("UPDATE jobs SET decision = 'dismissed', status = 'dismissed', updated_at = ? WHERE id = ? AND user_id = ?", (db.now_iso(), job_id, uid()))
         msg = f"User dismissed '{j['title']}' at {j['company']}" + (f": {body.reason}" if body.reason else "")
     else:
-        db.execute("UPDATE jobs SET decision = NULL, updated_at = ? WHERE id = ?", (db.now_iso(), job_id))
+        db.execute("UPDATE jobs SET decision = NULL, updated_at = ? WHERE id = ? AND user_id = ?", (db.now_iso(), job_id, uid()))
         msg = f"User reset decision for '{j['title']}'"
     audit.log("decision", f"job_{body.decision}", msg, entity_type="job", entity_id=job_id, details={"reason": body.reason})
     if body.decision == "reset":
@@ -162,7 +174,7 @@ def confirm_gate(job_id: str, body: GateConfirm):
         raise HTTPException(409, "Use 'Re-check status' for postings JobPilot fetched; only manually entered jobs can be confirmed open by you.")
     conf = j["user_confirmations"]
     conf[body.key] = db.now_iso()
-    db.execute("UPDATE jobs SET user_confirmations = ? WHERE id = ?", (db.jdumps(conf), job_id))
+    db.execute("UPDATE jobs SET user_confirmations = ? WHERE id = ? AND user_id = ?", (db.jdumps(conf), job_id, uid()))
     audit.log("decision", "gate_confirmed", f"User confirmed requirement '{g['label']}' for '{j['title']}'", entity_type="job", entity_id=job_id)
     return pipeline.evaluate(job_id)
 
@@ -175,8 +187,8 @@ def recheck(job_id: str):
     if j["source"] == "manual" and not j["source_url"]:
         raise HTTPException(409, "This job was entered manually without a URL, so its status cannot be re-checked automatically.")
     ext = job_extract.extract_url(j["source_url"])
-    db.execute("UPDATE jobs SET page_status = ?, page_status_detail = ?, verified_at = ?, updated_at = ? WHERE id = ?",
-               (ext["page_status"], ext["page_status_detail"], db.now_iso(), db.now_iso(), job_id))
+    db.execute("UPDATE jobs SET page_status = ?, page_status_detail = ?, verified_at = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+               (ext["page_status"], ext["page_status_detail"], db.now_iso(), db.now_iso(), job_id, uid()))
     audit.log("extraction", "status_rechecked", f"Re-checked '{j['title']}': {ext['page_status']} — {ext['page_status_detail']}",
               entity_type="job", entity_id=job_id, source_ref=j["source_url"])
     return pipeline.evaluate(job_id)
@@ -204,7 +216,7 @@ def delete_job(job_id: str):
     j = pipeline.get_job(job_id)
     if not j:
         raise HTTPException(404, "Job not found")
-    db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+    db.execute("DELETE FROM jobs WHERE id = ? AND user_id = ?", (job_id, uid()))
     shutil.rmtree(job_dir(job_id), ignore_errors=True)
     audit.log("decision", "job_deleted", f"User deleted job '{j['title']}' at {j['company']}", entity_type="job", entity_id=job_id)
     return {"ok": True}
@@ -220,15 +232,20 @@ def report(job_id: str):
 
 @router.post("/discovery/run")
 def run_discovery():
+    if not entitlements.flag("discovery"):
+        raise HTTPException(409, "Job discovery is temporarily disabled by the administrator.")
+    entitlements.require_feature("automation")
+    entitlements.consume("job_search")
+    tracking.event("job_search", feature="discovery", meta={"source": "discovery"})
     return tasks.submit("discovery", lambda t: discovery.run(t, "manual"), label="Discovery run")
 
 
 @router.get("/discovery/runs")
 def runs():
-    rows = db.query("SELECT * FROM discovery_runs ORDER BY id DESC LIMIT 20")
+    rows = db.query("SELECT * FROM discovery_runs WHERE user_id = ? ORDER BY id DESC LIMIT 20", (uid(),))
     for r in rows:
         r["stats"] = db.jloads(r["stats"], {})
-    return {"runs": rows, "schedule": discovery.get_schedule(), "running": tasks.running("discovery")}
+    return {"runs": rows, "schedule": discovery.get_schedule(), "running": tasks.running("discovery", uid())}
 
 
 @router.post("/jobs/reevaluate")

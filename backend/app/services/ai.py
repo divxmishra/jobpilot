@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 import httpx
 
 from .. import audit, db
+from ..context import uid_or_none
 from ..config import settings
 
 DEFAULT_AI_SETTINGS = {"enabled": False, "consent_profile_data": False, "daily_cap_inr": 10.0, "monthly_cap_inr": 300.0,
@@ -38,7 +39,7 @@ SYSTEM_PROMPT = (
 
 def get_ai_settings() -> dict:
     s = dict(DEFAULT_AI_SETTINGS)
-    s.update(db.get_setting("ai", {}) or {})
+    s.update((db.get_user_setting("ai", {}) if uid_or_none() else {}) or {})
     return s
 
 
@@ -62,7 +63,7 @@ def save_ai_settings(new: dict) -> dict:
         raise ValueError("Daily cap cannot exceed the monthly cap")
     if new.get("resume"):
         s["paused"], s["pause_reason"] = False, None
-    db.set_setting("ai", s)
+    db.set_user_setting("ai", s)
     audit.log("settings", "ai_settings", "AI/budget settings updated",
               details={k: s[k] for k in ("enabled", "consent_profile_data", "daily_cap_inr", "monthly_cap_inr", "daily_call_limit")})
     return s
@@ -72,10 +73,10 @@ def usage_summary() -> dict:
     today = datetime.now(timezone.utc).date().isoformat()
     month = today[:7]
     d = db.query_one("SELECT COALESCE(SUM(cost_inr),0) c, COUNT(*) n, COALESCE(SUM(input_tokens+output_tokens),0) t "
-                     "FROM ai_usage WHERE substr(at,1,10) = ? AND cached = 0", (today,))
+                     "FROM ai_usage WHERE substr(at,1,10) = ? AND cached = 0 AND user_id IS ?", (today, uid_or_none()))
     m = db.query_one("SELECT COALESCE(SUM(cost_inr),0) c, COUNT(*) n, COALESCE(SUM(input_tokens+output_tokens),0) t "
-                     "FROM ai_usage WHERE substr(at,1,7) = ? AND cached = 0", (month,))
-    cached = db.query_one("SELECT COUNT(*) n FROM ai_usage WHERE substr(at,1,7) = ? AND cached = 1", (month,))
+                     "FROM ai_usage WHERE substr(at,1,7) = ? AND cached = 0 AND user_id IS ?", (month, uid_or_none()))
+    cached = db.query_one("SELECT COUNT(*) n FROM ai_usage WHERE substr(at,1,7) = ? AND cached = 1 AND user_id IS ?", (month, uid_or_none()))
     s = get_ai_settings()
     return {"today_cost_inr": round(d["c"], 4), "today_calls": d["n"], "today_tokens": d["t"],
             "month_cost_inr": round(m["c"], 4), "month_calls": m["n"], "month_tokens": m["t"], "month_cache_hits": cached["n"],
@@ -86,6 +87,9 @@ def usage_summary() -> dict:
 def status() -> dict:
     s = get_ai_settings()
     provider = settings.ai_provider
+    from .entitlements import flag
+    if not flag("ai"):
+        s = dict(s, enabled=False)
     return {"provider": provider, "key_configured": settings.ai_key_present(),
             "model": settings.ai_model or DEFAULT_MODELS.get(provider, ""), "enabled": s["enabled"],
             "active": bool(s["enabled"] and settings.ai_key_present() and not s["paused"]),
@@ -95,12 +99,22 @@ def status() -> dict:
 def _pause(reason: str) -> None:
     s = get_ai_settings()
     s["paused"], s["pause_reason"] = True, reason
-    db.set_setting("ai", s)
+    db.set_user_setting("ai", s)
     audit.log("cost", "ai_paused", f"AI paused automatically: {reason}. Deterministic processing continues.", level="warning", notify=True,
-              link="/settings")
+              link="/app/settings")
+
+
+def _global_budget_ok() -> bool:
+    from .entitlements import system
+    month = datetime.now(timezone.utc).date().isoformat()[:7]
+    total = db.query_one("SELECT COALESCE(SUM(cost_inr),0) c FROM ai_usage WHERE substr(at,1,7) = ? AND cached = 0", (month,))["c"]
+    return total < float(system()["global_ai_monthly_budget_inr"]) or settings.ai_price_in_per_m == 0
 
 
 def _budget_ok() -> bool:
+    if not _global_budget_ok():
+        _pause("platform-wide monthly AI budget reached")
+        return False
     u = usage_summary()
     if u["today_cost_inr"] >= u["daily_cap_inr"] and u["daily_cap_inr"] > 0 and settings.ai_price_in_per_m > 0:
         _pause(f"daily budget cap ₹{u['daily_cap_inr']} reached")
@@ -116,8 +130,8 @@ def _budget_ok() -> bool:
 
 def _record(purpose: str, model: str, tin: int, tout: int, cached: bool, ok: bool = True) -> None:
     cost = (tin * settings.ai_price_in_per_m + tout * settings.ai_price_out_per_m) / 1e6
-    db.execute("INSERT INTO ai_usage(at, provider, model, purpose, input_tokens, output_tokens, cost_inr, cached, ok) VALUES (?,?,?,?,?,?,?,?,?)",
-               (db.now_iso(), settings.ai_provider, model, purpose, tin, tout, 0 if cached else cost, 1 if cached else 0, 1 if ok else 0))
+    db.execute("INSERT INTO ai_usage(at, provider, model, purpose, input_tokens, output_tokens, cost_inr, cached, ok, user_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+               (db.now_iso(), settings.ai_provider, model, purpose, tin, tout, 0 if cached else cost, 1 if cached else 0, 1 if ok else 0, uid_or_none()))
     if not cached:
         audit.log("cost", "ai_call", f"AI call for {purpose}: {tin}+{tout} tokens, est. ₹{cost:.4f}", details={"model": model, "ok": ok})
 
@@ -164,6 +178,11 @@ def complete_json(purpose: str, system: str, user: str) -> dict | None:
         return db.jloads(cached["response"], None)
     if not _budget_ok():
         return None
+    from . import entitlements
+    try:
+        entitlements.consume("ai_request")
+    except entitlements.LimitReached:
+        return None  # plan's AI allowance used up: deterministic processing continues
     retries = get_ai_settings()["max_retries"]
     last = None
     for _ in range(retries + 1):

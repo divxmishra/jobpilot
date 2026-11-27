@@ -6,6 +6,7 @@ import re
 import uuid
 
 from .. import audit, db
+from ..context import uid
 from ..files import atomic_write, job_dir, write_json
 from . import ai, evaluation, profile_service as ps, requirements as rq
 
@@ -30,7 +31,7 @@ def dedupe_key(job: dict) -> str:
 
 
 def get_job(job_id: str) -> dict | None:
-    j = db.query_one("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    j = db.query_one("SELECT * FROM jobs WHERE id = ? AND user_id = ?", (job_id, uid()))
     if not j:
         return None
     for k, d in (("alt_urls", []), ("missing_fields", []), ("requirements", None), ("eligibility", None), ("match", None),
@@ -43,16 +44,16 @@ def get_job(job_id: str) -> dict | None:
 
 def find_duplicate(job: dict) -> dict | None:
     if job.get("external_id"):
-        r = db.query_one("SELECT id FROM jobs WHERE source = ? AND external_id = ?", (job["source"], job["external_id"]))
+        r = db.query_one("SELECT id FROM jobs WHERE source = ? AND external_id = ? AND user_id = ?", (job["source"], job["external_id"], uid()))
         if r:
             return r
     if job.get("source_url"):
-        r = db.query_one("SELECT id FROM jobs WHERE source_url = ? OR apply_url = ? OR alt_urls LIKE ?",
-                         (job["source_url"], job["source_url"], f'%"{job["source_url"]}"%'))
+        r = db.query_one("SELECT id FROM jobs WHERE user_id = ? AND (source_url = ? OR apply_url = ? OR alt_urls LIKE ?)",
+                         (uid(), job["source_url"], job["source_url"], f'%"{job["source_url"]}"%'))
         if r:
             return r
     if job.get("company") and job.get("title"):
-        return db.query_one("SELECT id FROM jobs WHERE dedupe_key = ?", (dedupe_key(job),))
+        return db.query_one("SELECT id FROM jobs WHERE dedupe_key = ? AND user_id = ?", (dedupe_key(job), uid()))
     return None
 
 
@@ -73,7 +74,7 @@ def ingest(extracted: dict, *, trigger: str) -> tuple[dict, bool]:
             fields.update(page_status=extracted["page_status"], page_status_detail=extracted.get("page_status_detail"),
                           verified_at=db.now_iso())
         sets = ", ".join(f"{k} = ?" for k in fields)
-        db.execute(f"UPDATE jobs SET {sets} WHERE id = ?", (*fields.values(), existing["id"]))
+        db.execute(f"UPDATE jobs SET {sets} WHERE id = ? AND user_id = ?", (*fields.values(), existing["id"], uid()))
         audit.log("discovery", "duplicate", f"Duplicate of existing job '{existing['title']}' at {existing['company']}"
                   + (" — alternate source URL recorded" if changed else ""), entity_type="job", entity_id=existing["id"],
                   source_ref=extracted.get("source_url"))
@@ -82,7 +83,7 @@ def ingest(extracted: dict, *, trigger: str) -> tuple[dict, bool]:
     now = db.now_iso()
     vals = {k: extracted.get(k) for k in JOB_COLUMNS}
     vals.update(id=jid, dedupe_key=dedupe_key(extracted), missing_fields=db.jdumps(extracted.get("missing_fields", [])),
-                alt_urls="[]", created_at=now, updated_at=now, status="new",
+                alt_urls="[]", created_at=now, updated_at=now, status="new", user_id=uid(),
                 verified_at=now if extracted.get("page_status") not in (None, "unknown") else None)
     cols = ", ".join(vals)
     db.execute(f"INSERT INTO jobs({cols}) VALUES ({', '.join('?' for _ in vals)})", tuple(vals.values()))
@@ -100,8 +101,8 @@ def evaluate(job_id: str) -> dict:
         raise LookupError("Job not found")
     profile = ps.active_profile()
     if not profile:
-        db.execute("UPDATE jobs SET status = 'new', decision_reason = ?, updated_at = ? WHERE id = ?",
-                   ("Waiting for a verified profile before evaluation", db.now_iso(), job_id))
+        db.execute("UPDATE jobs SET status = 'new', decision_reason = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                   ("Waiting for a verified profile before evaluation", db.now_iso(), job_id, uid()))
         return get_job(job_id)
     vp = ps.verified_view(profile)
     prefs = ps.get_preferences()
@@ -118,20 +119,20 @@ def evaluate(job_id: str) -> dict:
             status = "shortlisted"
         else:
             # Re-evaluation made a shortlisted job ineligible: undo the shortlist, tell the user.
-            db.execute("UPDATE jobs SET decision = NULL WHERE id = ?", (job_id,))
+            db.execute("UPDATE jobs SET decision = NULL WHERE id = ? AND user_id = ?", (job_id, uid()))
             audit.log("scoring", "shortlist_revoked", f"'{job['title']}' no longer qualifies after re-evaluation: {reason}",
-                      level="warning", entity_type="job", entity_id=job_id, notify=True, link=f"/jobs/{job_id}")
+                      level="warning", entity_type="job", entity_id=job_id, notify=True, link=f"/app/jobs/{job_id}")
     db.execute(
         "UPDATE jobs SET requirements = ?, eligibility = ?, eligibility_result = ?, match = ?, match_score = ?, status = ?, "
-        "decision_reason = ?, profile_version_id = ?, updated_at = ? WHERE id = ?",
+        "decision_reason = ?, profile_version_id = ?, updated_at = ? WHERE id = ? AND user_id = ?",
         (db.jdumps(req), db.jdumps(elig), elig["result"], db.jdumps(match), match["score"], status, reason,
-         profile["id"], db.now_iso(), job_id))
+         profile["id"], db.now_iso(), job_id, uid()))
     audit.log("scoring", "job_evaluated",
               f"'{job['title']}' at {job['company']}: eligibility {elig['result']}, match {match['score']}% "
               f"({match['confidence']} confidence) → {STATUS_LABELS[status]}",
               entity_type="job", entity_id=job_id, source_ref=job["source_url"],
               details={"rubric": match["rubric_version"], "profile_version": profile["version"], "reason": reason},
-              notify=status == "qualified" and job["status"] != "qualified", link=f"/jobs/{job_id}")
+              notify=status == "qualified" and job["status"] != "qualified", link=f"/app/jobs/{job_id}")
     j = get_job(job_id)
     write_job_files(j, profile["version"])
     return j
@@ -194,7 +195,7 @@ def process_url(url: str, trigger: str = "manual URL") -> tuple[dict, bool]:
 
 
 def reevaluate_all(task=None) -> dict:
-    ids = [r["id"] for r in db.query("SELECT id FROM jobs ORDER BY created_at")]
+    ids = [r["id"] for r in db.query("SELECT id FROM jobs WHERE user_id = ? ORDER BY created_at", (uid(),))]
     n = 0
     for i, jid in enumerate(ids):
         if task and task.cancelled():

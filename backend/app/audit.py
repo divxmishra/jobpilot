@@ -39,15 +39,24 @@ def log(category: str, action: str, message: str, *, level: str = "info", entity
     message = scrub(message)
     details_s = scrub(db.jdumps(details)) if details is not None else None
     at = db.now_iso()
+    from .context import uid_or_none
+    user_id = uid_or_none()
     eid = db.execute(
-        "INSERT INTO audit_events(at, category, action, level, entity_type, entity_id, message, details, source_ref) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        (at, category, action, level, entity_type, None if entity_id is None else str(entity_id), message, details_s, source_ref),
+        "INSERT INTO audit_events(at, category, action, level, entity_type, entity_id, message, details, source_ref, user_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (at, category, action, level, entity_type, None if entity_id is None else str(entity_id), message, details_s, source_ref,
+         user_id),
     )
+    if category in ("decision", "profile", "settings", "document") or action in ("job_extracted", "job_evaluated"):
+        try:
+            from .services import backups
+            backups.mark_changed()
+        except Exception:
+            pass
     try:
         append_line(
             data_path("audit", f"{at[:10]}.jsonl"),
-            json.dumps({"id": eid, "at": at, "category": category, "action": action, "level": level,
+            json.dumps({"id": eid, "at": at, "user_id": user_id, "category": category, "action": action, "level": level,
                         "entity_type": entity_type, "entity_id": entity_id, "message": message,
                         "source_ref": source_ref, "details": json.loads(details_s) if details_s else None},
                        ensure_ascii=False, default=str),
@@ -59,9 +68,13 @@ def log(category: str, action: str, message: str, *, level: str = "info", entity
     return eid
 
 
-def notify_user(level: str, title: str, body: str | None = None, link: str | None = None) -> None:
-    prefs = db.get_setting("notifications", {"in_app": True})
+def notify_user(level: str, title: str, body: str | None = None, link: str | None = None, user_id: int | None = None) -> None:
+    from .context import uid_or_none
+    user_id = user_id or uid_or_none()
+    if not user_id:
+        return
+    prefs = db.get_user_setting("notifications", {"in_app": True}, user_id=user_id)
     if not prefs.get("in_app", True) and level != "error":
         return
-    db.execute("INSERT INTO notifications(at, level, title, body, link) VALUES (?,?,?,?,?)",
-               (db.now_iso(), level, scrub(title), scrub(body) if body else None, link))
+    db.execute("INSERT INTO notifications(at, level, title, body, link, user_id) VALUES (?,?,?,?,?,?)",
+               (db.now_iso(), level, scrub(title), scrub(body) if body else None, link, user_id))

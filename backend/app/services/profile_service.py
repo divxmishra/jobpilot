@@ -11,7 +11,8 @@ import uuid
 from datetime import date
 
 from .. import audit, db
-from ..files import atomic_write, data_path, read_yaml, write_yaml
+from ..context import uid
+from ..files import atomic_write, data_path, read_yaml, user_path, write_yaml
 from . import resume_parser
 from .textutil import merge_intervals_months
 
@@ -36,7 +37,14 @@ DEFAULT_PREFERENCES = {
     "near_match_margin": 10,
     "max_job_age_days": 45,
     "allow_follow_up": True,
+    # India-specific: notice period & CTC (LPA = lakh rupees per annum)
+    "notice_period": None,              # immediate | 15 | 30 | 60 | 90 | negotiable | None (not set)
+    "expected_ctc_lpa": None,
+    "min_ctc_lpa": None,
+    "ctc_negotiable": False,
+    "salary_mismatch_mode": "hard",     # hard = exclude job | warning = flag only
 }
+NOTICE_OPTIONS = {"immediate": 0, "15": 15, "30": 30, "60": 60, "90": 90, "negotiable": None}
 
 
 # ------------------------------------------------------------------ uploads
@@ -47,10 +55,10 @@ def _safe_name(name: str) -> str:
 
 def save_upload(kind: str, filename: str, data: bytes, mime: str | None) -> dict:
     sha = hashlib.sha256(data).hexdigest()
-    existing = db.query_one("SELECT * FROM uploads WHERE sha256 = ? AND kind = ?", (sha, kind))
+    existing = db.query_one("SELECT * FROM uploads WHERE sha256 = ? AND kind = ? AND user_id = ?", (sha, kind, uid()))
     if existing:
         return existing
-    path = data_path("uploads", f"{sha[:16]}_{_safe_name(filename)}")
+    path = user_path("uploads", f"{sha[:16]}_{_safe_name(filename)}")
     if not path.exists():
         atomic_write(path, data)
         try:
@@ -60,12 +68,12 @@ def save_upload(kind: str, filename: str, data: bytes, mime: str | None) -> dict
     text = None
     if kind == "master_resume":
         text = resume_parser.extract_text(filename, data)
-    uid = db.execute(
-        "INSERT INTO uploads(kind, filename, stored_path, mime, size, sha256, extracted_text, created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (kind, _safe_name(filename), str(path.relative_to(data_path())), mime, len(data), sha, text, db.now_iso()))
+    upload_row_id = db.execute(
+        "INSERT INTO uploads(kind, filename, stored_path, mime, size, sha256, extracted_text, created_at, user_id) VALUES (?,?,?,?,?,?,?,?,?)",
+        (kind, _safe_name(filename), str(path.relative_to(data_path())), mime, len(data), sha, text, db.now_iso(), uid()))
     audit.log("profile", "upload", f"Stored immutable {kind.replace('_', ' ')} '{_safe_name(filename)}' ({len(data)} bytes)",
-              entity_type="upload", entity_id=uid, details={"sha256": sha})
-    return db.query_one("SELECT * FROM uploads WHERE id = ?", (uid,))
+              entity_type="upload", entity_id=upload_row_id, details={"sha256": sha})
+    return db.query_one("SELECT * FROM uploads WHERE id = ?", (upload_row_id,))
 
 
 # ------------------------------------------------------------------ versions
@@ -78,32 +86,32 @@ def _row(r: dict | None) -> dict | None:
 
 
 def active_profile() -> dict | None:
-    return _row(db.query_one("SELECT * FROM profile_versions WHERE status = 'verified' ORDER BY version DESC LIMIT 1"))
+    return _row(db.query_one("SELECT * FROM profile_versions WHERE status = 'verified' AND user_id = ? ORDER BY version DESC LIMIT 1", (uid(),)))
 
 
 def latest_draft() -> dict | None:
-    return _row(db.query_one("SELECT * FROM profile_versions WHERE status = 'draft' ORDER BY version DESC LIMIT 1"))
+    return _row(db.query_one("SELECT * FROM profile_versions WHERE status = 'draft' AND user_id = ? ORDER BY version DESC LIMIT 1", (uid(),)))
 
 
 def get_version(vid: int) -> dict | None:
-    return _row(db.query_one("SELECT * FROM profile_versions WHERE id = ?", (vid,)))
+    return _row(db.query_one("SELECT * FROM profile_versions WHERE id = ? AND user_id = ?", (vid, uid())))
 
 
 def list_versions() -> list[dict]:
-    return db.query("SELECT id, version, status, note, created_at, confirmed_at, upload_id FROM profile_versions ORDER BY version DESC")
+    return db.query("SELECT id, version, status, note, created_at, confirmed_at, upload_id FROM profile_versions WHERE user_id = ? ORDER BY version DESC", (uid(),))
 
 
 def _next_version() -> int:
-    r = db.query_one("SELECT MAX(version) AS v FROM profile_versions")
+    r = db.query_one("SELECT MAX(version) AS v FROM profile_versions WHERE user_id = ?", (uid(),))
     return (r["v"] or 0) + 1
 
 
 def _discard_open_drafts() -> None:
-    db.execute("DELETE FROM profile_versions WHERE status = 'draft'")
+    db.execute("DELETE FROM profile_versions WHERE status = 'draft' AND user_id = ?", (uid(),))
 
 
 def create_draft_from_upload(upload_id: int) -> dict:
-    up = db.query_one("SELECT * FROM uploads WHERE id = ?", (upload_id,))
+    up = db.query_one("SELECT * FROM uploads WHERE id = ? AND user_id = ?", (upload_id, uid()))
     if not up or up["kind"] != "master_resume":
         raise ValueError("Upload not found")
     data = resume_parser.parse_resume_text(up["extracted_text"] or "")
@@ -111,9 +119,9 @@ def create_draft_from_upload(upload_id: int) -> dict:
     active = active_profile()
     _discard_open_drafts()
     vid = db.execute(
-        "INSERT INTO profile_versions(version, status, data, upload_id, parent_id, note, created_at) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO profile_versions(version, status, data, upload_id, parent_id, note, created_at, user_id) VALUES (?,?,?,?,?,?,?,?)",
         (_next_version(), "draft", db.jdumps(data), upload_id, active["id"] if active else None,
-         "Extracted from master resume", db.now_iso()))
+         "Extracted from master resume", db.now_iso(), uid()))
     n_unc = sum(1 for k in FACT_LISTS for i in data.get(k, []) if i.get("status") == "uncertain")
     audit.log("extraction", "resume_parsed",
               f"Extracted profile draft from '{up['filename']}': {len(data['experience'])} positions, "
@@ -130,8 +138,8 @@ def new_draft_from_active(note: str = "Profile update") -> dict:
     if existing:
         return existing
     vid = db.execute(
-        "INSERT INTO profile_versions(version, status, data, upload_id, parent_id, note, created_at) VALUES (?,?,?,?,?,?,?)",
-        (_next_version(), "draft", db.jdumps(active["data"]), active["upload_id"], active["id"], note, db.now_iso()))
+        "INSERT INTO profile_versions(version, status, data, upload_id, parent_id, note, created_at, user_id) VALUES (?,?,?,?,?,?,?,?)",
+        (_next_version(), "draft", db.jdumps(active["data"]), active["upload_id"], active["id"], note, db.now_iso(), uid()))
     audit.log("profile", "draft_created", f"Started controlled profile update (draft v{_next_version() - 1})",
               entity_type="profile_version", entity_id=vid)
     return get_version(vid)
@@ -196,14 +204,25 @@ def confirm_draft(vid: int) -> dict:
     if not any(i.get("status") == "verified" for k in FACT_LISTS for i in data.get(k, [])):
         raise ValueError("Confirm at least one skill, position, education or project entry.")
     with db.tx() as conn:
-        conn.execute("UPDATE profile_versions SET status = 'superseded' WHERE status = 'verified'")
-        conn.execute("UPDATE profile_versions SET status = 'verified', confirmed_at = ? WHERE id = ?", (db.now_iso(), vid))
+        conn.execute("UPDATE profile_versions SET status = 'superseded' WHERE status = 'verified' AND user_id = ?", (uid(),))
+        conn.execute("UPDATE profile_versions SET status = 'verified', confirmed_at = ? WHERE id = ? AND user_id = ?",
+                     (db.now_iso(), vid, uid()))
+        first = conn.execute("UPDATE users SET profile_completed_at = ? WHERE id = ? AND profile_completed_at IS NULL",
+                             (db.now_iso(), uid())).rowcount
     write_cv_md()
+    if first:
+        from . import entitlements, tracking
+        tracking.event("profile_setup_completed", feature="profile")
+        trial = entitlements.start_trial_if_eligible(uid())
+        if trial and trial["status"] == "active":
+            days = entitlements.system()["trial_days"]
+            tracking.event("trial_started", feature="subscription", meta={"days": days})
+            audit.notify_user("success", f"Your {days}-day free trial has started.", link="/app/subscription")
     v = get_version(vid)
     unverified = sum(1 for k in FACT_LISTS for i in data.get(k, []) if i.get("status") != "verified")
     audit.log("decision", "profile_confirmed",
               f"User confirmed profile v{v['version']}. {unverified} item(s) remain unverified and will not be used.",
-              entity_type="profile_version", entity_id=vid, notify=True, link="/setup")
+              entity_type="profile_version", entity_id=vid, notify=True, link="/app/setup")
     return v
 
 
@@ -326,16 +345,16 @@ def write_cv_md() -> None:
     if not p:
         return
     md = render_cv_md(p)
-    hist = data_path("cv_history", f"cv.v{p['version']}.md")
+    hist = user_path("cv_history", f"cv.v{p['version']}.md")
     if not hist.exists():
         atomic_write(hist, md)
-    atomic_write(data_path("cv.md"), md)
+    atomic_write(user_path("cv.md"), md)
 
 
 # ------------------------------------------------------------------ preferences
 def get_preferences() -> dict:
     prefs = copy.deepcopy(DEFAULT_PREFERENCES)
-    stored = db.get_setting("preferences", {}) or {}
+    stored = db.get_user_setting("preferences", {}) or {}
     prefs.update({k: v for k, v in stored.items() if k in DEFAULT_PREFERENCES})
     ex = copy.deepcopy(DEFAULT_PREFERENCES["exclusions"])
     ex.update(stored.get("exclusions", {}) or {})
@@ -390,6 +409,34 @@ def save_preferences(new: dict) -> dict:
                     errors.append(f"{k.replace('_', ' ')} must be between {lo} and {hi}")
             except (TypeError, ValueError):
                 errors.append(f"{k.replace('_', ' ')} must be a whole number")
+    if "notice_period" in new:
+        v = new["notice_period"]
+        v = None if v in (None, "") else str(v).lower()
+        if v is not None and v not in NOTICE_OPTIONS:
+            errors.append("Notice period must be immediate, 15, 30, 60, 90 days or negotiable")
+        cur["notice_period"] = v
+    for k in ("expected_ctc_lpa", "min_ctc_lpa"):
+        if k in new:
+            v = new[k]
+            if v in (None, ""):
+                cur[k] = None
+            else:
+                try:
+                    v = round(float(v), 2)
+                    if not 0 < v <= 1000:
+                        errors.append(f"{'Expected' if k.startswith('expected') else 'Minimum'} CTC must be between 0 and 1000 LPA")
+                    cur[k] = v
+                except (TypeError, ValueError):
+                    errors.append("CTC must be a number in LPA (e.g. 12.5)")
+    if cur.get("min_ctc_lpa") and cur.get("expected_ctc_lpa") and cur["min_ctc_lpa"] > cur["expected_ctc_lpa"]:
+        errors.append("Minimum acceptable CTC cannot be higher than expected CTC")
+    if "ctc_negotiable" in new:
+        cur["ctc_negotiable"] = bool(new["ctc_negotiable"])
+    if "salary_mismatch_mode" in new:
+        if new["salary_mismatch_mode"] not in ("hard", "warning"):
+            errors.append("Salary mismatch handling must be 'hard' or 'warning'")
+        else:
+            cur["salary_mismatch_mode"] = new["salary_mismatch_mode"]
     if "exclusions" in new and isinstance(new["exclusions"], dict):
         for k in cur["exclusions"]:
             if k in new["exclusions"]:
@@ -397,7 +444,7 @@ def save_preferences(new: dict) -> dict:
     if errors:
         raise ValueError("; ".join(errors))
     old = get_preferences()
-    db.set_setting("preferences", cur)
+    db.set_user_setting("preferences", cur)
     write_profile_yml()
     if old.get("match_threshold") != cur["match_threshold"]:
         audit.log("settings", "threshold_changed",
@@ -407,12 +454,12 @@ def save_preferences(new: dict) -> dict:
 
 
 def write_profile_yml() -> None:
-    write_yaml(data_path("profile.yml"), get_preferences(),
+    write_yaml(user_path("profile.yml"), get_preferences(),
                header="# JobPilot candidate preferences (generated from SQLite; edit in the app or import via Settings)\n")
 
 
 def import_profile_yml() -> dict:
-    y = read_yaml(data_path("profile.yml"))
+    y = read_yaml(user_path("profile.yml"))
     if not isinstance(y, dict):
         raise ValueError("profile.yml is missing or not a mapping")
     return save_preferences(y)
@@ -423,7 +470,7 @@ ATS_TYPES = {"greenhouse", "lever", "ashby", "remotive", "career_page"}
 
 
 def list_companies() -> list[dict]:
-    return db.query("SELECT * FROM companies ORDER BY name COLLATE NOCASE")
+    return db.query("SELECT * FROM companies WHERE user_id = ? ORDER BY name COLLATE NOCASE", (uid(),))
 
 
 def validate_company(c: dict) -> dict:
@@ -448,21 +495,21 @@ def validate_company(c: dict) -> dict:
 def upsert_company(c: dict, cid: int | None = None) -> dict:
     v = validate_company(c)
     if cid:
-        db.execute("UPDATE companies SET name=?, ats=?, token=?, careers_url=?, enabled=?, notes=? WHERE id=?",
-                   (v["name"], v["ats"], v["token"], v["careers_url"], v["enabled"], v["notes"], cid))
+        db.execute("UPDATE companies SET name=?, ats=?, token=?, careers_url=?, enabled=?, notes=? WHERE id=? AND user_id=?",
+                   (v["name"], v["ats"], v["token"], v["careers_url"], v["enabled"], v["notes"], cid, uid()))
     else:
-        cid = db.execute("INSERT INTO companies(name, ats, token, careers_url, enabled, notes, created_at) VALUES (?,?,?,?,?,?,?)",
-                         (v["name"], v["ats"], v["token"], v["careers_url"], v["enabled"], v["notes"], db.now_iso()))
+        cid = db.execute("INSERT INTO companies(name, ats, token, careers_url, enabled, notes, created_at, user_id) VALUES (?,?,?,?,?,?,?,?)",
+                         (v["name"], v["ats"], v["token"], v["careers_url"], v["enabled"], v["notes"], db.now_iso(), uid()))
     write_portals_yml()
     audit.log("settings", "company_saved", f"Company registry entry saved: {v['name']} ({v['ats']})", entity_type="company", entity_id=cid)
-    return db.query_one("SELECT * FROM companies WHERE id = ?", (cid,))
+    return db.query_one("SELECT * FROM companies WHERE id = ? AND user_id = ?", (cid, uid()))
 
 
 def delete_company(cid: int) -> None:
-    c = db.query_one("SELECT * FROM companies WHERE id = ?", (cid,))
+    c = db.query_one("SELECT * FROM companies WHERE id = ? AND user_id = ?", (cid, uid()))
     if not c:
         raise LookupError("Company not found")
-    db.execute("DELETE FROM companies WHERE id = ?", (cid,))
+    db.execute("DELETE FROM companies WHERE id = ? AND user_id = ?", (cid, uid()))
     write_portals_yml()
     audit.log("settings", "company_deleted", f"Removed {c['name']} from company registry", entity_type="company", entity_id=cid)
 
@@ -470,19 +517,19 @@ def delete_company(cid: int) -> None:
 def write_portals_yml() -> None:
     items = [{"name": c["name"], "ats": c["ats"], "token": c["token"], "careers_url": c["careers_url"],
               "enabled": bool(c["enabled"]), "notes": c["notes"] or ""} for c in list_companies()]
-    write_yaml(data_path("portals.yml"), {"companies": items},
+    write_yaml(user_path("portals.yml"), {"companies": items},
                header="# JobPilot target-company registry (generated from SQLite; edit in the app or import via Settings)\n")
 
 
 def import_portals_yml() -> int:
-    y = read_yaml(data_path("portals.yml"))
+    y = read_yaml(user_path("portals.yml"))
     if not isinstance(y, dict) or not isinstance(y.get("companies"), list):
         raise ValueError("portals.yml must contain a 'companies' list")
     validated = [validate_company(c) for c in y["companies"]]
     with db.tx() as conn:
-        conn.execute("DELETE FROM companies")
+        conn.execute("DELETE FROM companies WHERE user_id = ?", (uid(),))
         for v in validated:
-            conn.execute("INSERT INTO companies(name, ats, token, careers_url, enabled, notes, created_at) VALUES (?,?,?,?,?,?,?)",
-                         (v["name"], v["ats"], v["token"], v["careers_url"], v["enabled"], v["notes"], db.now_iso()))
+            conn.execute("INSERT INTO companies(name, ats, token, careers_url, enabled, notes, created_at, user_id) VALUES (?,?,?,?,?,?,?,?)",
+                         (v["name"], v["ats"], v["token"], v["careers_url"], v["enabled"], v["notes"], db.now_iso(), uid()))
     audit.log("settings", "portals_imported", f"Imported {len(validated)} companies from portals.yml")
     return len(validated)

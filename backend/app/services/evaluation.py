@@ -205,9 +205,61 @@ def evaluate_gates(job: dict, req: dict, vp: dict, prefs: dict, confirmations: d
     if sen_pref and job.get("seniority") and job["seniority"] not in sen_pref:
         gates.append(_gate("seniority_pref", "Seniority preference", "fail", f"Job seniority '{job['seniority']}' is outside your preference"))
 
-    # 10. Salary
+    # 10a. Notice period (India): explicit employer requirement vs the user's notice period
+    from .profile_service import NOTICE_OPTIONS
+    nreq = req.get("notice") or {"status": "missing"}
+    user_np = prefs.get("notice_period")
+    label_np = "Notice period"
+    if nreq.get("status") == "explicit":
+        need = nreq["max_days"]
+        need_txt = "immediate joining" if need == 0 else f"notice of at most {need} days"
+        if user_np is None:
+            gates.append(_gate("notice_period", label_np, "needs_verification",
+                               f"The posting asks for {need_txt}; set your notice period in Preferences", nreq.get("evidence")))
+        elif user_np == "negotiable":
+            gates.append(_gate("notice_period", label_np, "needs_verification",
+                               f"The posting asks for {need_txt}; your notice period is negotiable — confirm you can meet it",
+                               nreq.get("evidence")))
+        else:
+            have = NOTICE_OPTIONS[user_np]
+            ok = have <= need
+            res = "pass" if ok else ("fail" if nreq.get("mandatory") else "warning")
+            gates.append(_gate("notice_period", label_np, res,
+                               f"Posting asks for {need_txt}; yours is {'immediate' if have == 0 else str(have) + ' days'}"
+                               + ("" if ok or nreq.get("mandatory") else " (stated as a preference, not a requirement)"),
+                               nreq.get("evidence")))
+    elif nreq.get("status") == "inferred":
+        gates.append(_gate("notice_period", label_np, "warning",
+                           "The posting suggests a preference for short notice but states no number", nreq.get("evidence")))
+    else:
+        gates.append(_gate("notice_period", label_np, "unknown", "The posting states no notice-period requirement (not assumed)"))
+
+    # 10b. Expected / minimum CTC (India)
+    comp = req.get("compensation") or {"status": "missing"}
+    min_lpa = prefs.get("min_ctc_lpa")
+    mode = prefs.get("salary_mismatch_mode", "hard")
+    if min_lpa:
+        label_ctc = f"Minimum CTC {min_lpa:g} LPA"
+        if comp.get("max_inr"):
+            max_lpa = comp["max_inr"] / 1e5
+            if max_lpa >= min_lpa:
+                gates.append(_gate("ctc", label_ctc, "pass", f"Stated range reaches {max_lpa:g} LPA", comp.get("evidence")))
+            elif comp.get("negotiable") and prefs.get("ctc_negotiable"):
+                gates.append(_gate("ctc", label_ctc, "warning",
+                                   f"Stated maximum {max_lpa:g} LPA is below your minimum, but the posting says pay is negotiable",
+                                   comp.get("evidence")))
+            else:
+                gates.append(_gate("ctc", label_ctc, "fail" if mode == "hard" else "warning",
+                                   f"Stated maximum {max_lpa:g} LPA is below your minimum {min_lpa:g} LPA"
+                                   + ("" if mode == "hard" else " (you chose to treat this as a warning)"), comp.get("evidence")))
+        elif comp.get("status") == "unverified":
+            gates.append(_gate("ctc", label_ctc, "unknown", "Pay is described only vaguely (no figure stated)", comp.get("evidence")))
+        else:
+            gates.append(_gate("ctc", label_ctc, "unknown", "The posting states no salary/CTC (never estimated)", comp.get("evidence")))
+
+    # 10. Salary (non-INR or when no CTC preference is set)
     smin = prefs.get("salary_min")
-    if smin and job.get("salary_max"):
+    if smin and job.get("salary_max") and not (min_lpa and (job.get("salary_currency") or "").upper() == "INR"):
         if (job.get("salary_currency") or "").upper() != (prefs.get("salary_currency") or "INR").upper():
             gates.append(_gate("salary", "Minimum salary", "pass", "Salary is in a different currency; not compared automatically"))
         elif job["salary_max"] >= smin:

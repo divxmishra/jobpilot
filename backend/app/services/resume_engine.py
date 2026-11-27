@@ -12,7 +12,8 @@ import math
 import re
 
 from .. import audit, db
-from ..files import atomic_write, data_path, write_json
+from ..context import uid
+from ..files import atomic_write, data_path, user_path, write_json
 from . import documents, evaluation, profile_service as ps, skills as sk
 from .textutil import tokens
 
@@ -354,26 +355,26 @@ def _render_and_score(content: dict, req: dict) -> tuple[bytes, bytes, int, dict
 def _store(job: dict, profile: dict, content: dict, km: list, ats: dict, cons: dict, pdf: bytes, docx_b: bytes, pages: int,
            parent_id: int | None, edited: bool) -> dict:
     jid = job["id"]
-    v = (db.query_one("SELECT MAX(version) v FROM resumes WHERE job_id = ?", (jid,))["v"] or 0) + 1
-    base = data_path("resumes", jid)
+    v = (db.query_one("SELECT MAX(version) v FROM resumes WHERE job_id = ? AND user_id = ?", (jid, uid()))["v"] or 0) + 1
+    base = user_path("resumes", jid)
     pdf_p, docx_p = base / f"resume_v{v}.pdf", base / f"resume_v{v}.docx"
     atomic_write(pdf_p, pdf)
     atomic_write(docx_p, docx_b)
     now = db.now_iso()
     with db.tx() as conn:
-        conn.execute("UPDATE resumes SET status = 'superseded', updated_at = ? WHERE job_id = ? AND status = 'draft'", (now, jid))
+        conn.execute("UPDATE resumes SET status = 'superseded', updated_at = ? WHERE job_id = ? AND user_id = ? AND status = 'draft'", (now, jid, uid()))
         cur = conn.execute(
             "INSERT INTO resumes(job_id, profile_version_id, version, status, content, keyword_map, ats, ats_score, consistency, "
-            "pdf_path, docx_path, page_count, edited, parent_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "pdf_path, docx_path, page_count, edited, parent_id, created_at, updated_at, user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (jid, profile["id"], v, "draft", db.jdumps(content), db.jdumps(km), db.jdumps(ats), ats["score"], db.jdumps(cons),
-             str(pdf_p.relative_to(data_path())), str(docx_p.relative_to(data_path())), pages, 1 if edited else 0, parent_id, now, now))
+             str(pdf_p.relative_to(data_path())), str(docx_p.relative_to(data_path())), pages, 1 if edited else 0, parent_id, now, now, uid()))
         rid = cur.lastrowid
     write_reports(job, v, km, ats, cons)
     return get_resume(rid)
 
 
 def write_reports(job: dict, v: int, km: list, ats: dict, cons: dict) -> None:
-    d = data_path("reports", job["id"])
+    d = user_path("reports", job["id"])
     L = [f"# ATS report v{v} — {job.get('title')} at {job.get('company')}", "", f"**Score:** {ats['score']}/100 — {ats['label']} ({ats['band']})",
          "", f"> {ats['disclaimer']}", "", "| Component | Weight | Points | Detail |", "|---|---|---|---|"]
     L += [f"| {c['label']} | {c['weight']} | {c['points']} | {c['detail']} |" for c in ats["components"]]
@@ -431,7 +432,7 @@ def generate(job_id: str, task=None) -> dict:
     audit.log("document", "resume_generated",
               f"Tailored resume v{r['version']} for '{job['title']}' — ATS {ats['score']}/100 ({ats['label']})",
               entity_type="resume", entity_id=r["id"], details={"job_id": job_id, "iterations": content["level"] + 1},
-              notify=True, link=f"/resumes/{r['id']}")
+              notify=True, link=f"/app/resumes/{r['id']}")
     return r
 
 
@@ -493,8 +494,8 @@ def approve(resume_id: int) -> dict:
                               "your profile with evidence through a profile update, before approving.")
     now = db.now_iso()
     with db.tx() as conn:
-        conn.execute("UPDATE resumes SET status = 'superseded', updated_at = ? WHERE job_id = ? AND status = 'approved'", (now, r["job_id"]))
-        conn.execute("UPDATE resumes SET status = 'approved', approved_at = ?, updated_at = ? WHERE id = ?", (now, now, resume_id))
+        conn.execute("UPDATE resumes SET status = 'superseded', updated_at = ? WHERE job_id = ? AND user_id = ? AND status = 'approved'", (now, r["job_id"], uid()))
+        conn.execute("UPDATE resumes SET status = 'approved', approved_at = ?, updated_at = ? WHERE id = ? AND user_id = ?", (now, now, resume_id, uid()))
     audit.log("decision", "resume_approved", f"User approved resume v{r['version']} (ATS {r['ats_score']}). Approval does not submit anything.",
               entity_type="resume", entity_id=resume_id)
     return get_resume(resume_id)
@@ -504,13 +505,13 @@ def reject(resume_id: int) -> dict:
     r = get_resume(resume_id)
     if not r or r["status"] != "draft":
         raise ValueError("Only drafts can be discarded")
-    db.execute("UPDATE resumes SET status = 'superseded', updated_at = ? WHERE id = ?", (db.now_iso(), resume_id))
+    db.execute("UPDATE resumes SET status = 'superseded', updated_at = ? WHERE id = ? AND user_id = ?", (db.now_iso(), resume_id, uid()))
     audit.log("decision", "resume_discarded", f"User discarded resume draft v{r['version']}", entity_type="resume", entity_id=resume_id)
     return get_resume(resume_id)
 
 
 def get_resume(rid: int) -> dict | None:
-    r = db.query_one("SELECT * FROM resumes WHERE id = ?", (rid,))
+    r = db.query_one("SELECT * FROM resumes WHERE id = ? AND user_id = ?", (rid, uid()))
     if not r:
         return None
     for k in ("content", "keyword_map", "ats", "consistency"):
@@ -520,11 +521,11 @@ def get_resume(rid: int) -> dict | None:
 
 def list_resumes(job_id: str | None = None) -> list[dict]:
     sql = ("SELECT r.id, r.job_id, r.version, r.status, r.ats_score, r.page_count, r.edited, r.created_at, r.approved_at, "
-           "r.consistency, j.title, j.company FROM resumes r JOIN jobs j ON j.id = r.job_id")
-    params: tuple = ()
+           "r.consistency, j.title, j.company FROM resumes r JOIN jobs j ON j.id = r.job_id WHERE r.user_id = ?")
+    params: tuple = (uid(),)
     if job_id:
-        sql += " WHERE r.job_id = ?"
-        params = (job_id,)
+        sql += " AND r.job_id = ?"
+        params = (uid(), job_id)
     rows = db.query(sql + " ORDER BY r.created_at DESC, r.id DESC", params)
     for r in rows:
         r["truthful"] = db.jloads(r.pop("consistency"), {}).get("ok", False)

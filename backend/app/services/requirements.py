@@ -57,6 +57,88 @@ COUNTRIES = ["United States", "USA", "US", "India", "United Kingdom", "UK", "Can
              "Netherlands", "Ireland", "France", "Spain", "Japan", "UAE", "European Union", "EU"]
 
 
+# ------------------------------------------------------------------ notice period & compensation (India)
+NOTICE_IMMEDIATE = re.compile(r"\b(immediate joiners?|join(?:ing)? immediately|immediately available|0\s*days?\s*notice|"
+                              r"notice period\s*(?:of\s*)?0\s*days)\b", re.I)
+NOTICE_DAYS = [
+    re.compile(r"notice period\s*(?:of|:|-)?\s*(?:up ?to|max(?:imum)?(?: of)?|less than|not more than|within|<=?)?\s*(\d{1,3})\s*days", re.I),
+    re.compile(r"(\d{1,3})\s*days?(?:'|’)?\s*notice", re.I),
+    re.compile(r"join(?:ing)?\s*(?:with)?in\s*(\d{1,3})\s*(days|weeks|months)", re.I),
+    re.compile(r"(?:can|able to|should)\s*join\s*(?:in|within)\s*(\d{1,3})\s*(days|weeks|months)", re.I),
+]
+NOTICE_SOFT = re.compile(r"\b(early joiners?|short notice|serving notice period|currently serving notice)\b", re.I)
+CTC_UPTO = re.compile(r"(?:ctc|salary|package|compensation)\s*(?:of|:|-)?\s*(?:up ?to|max(?:imum)?(?: of)?)\s*(?:₹|rs\.?|inr)?\s*"
+                      r"(\d+(?:\.\d+)?)\s*(lpa|lakhs?|lacs?|l)\b", re.I)
+CTC_RANGE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*(?:lpa|lakhs?|lacs?)\b", re.I)
+NEGOTIABLE = re.compile(r"\b(salary|ctc|compensation|package|pay)\b[^.\n]{0,40}\bnegotiable\b|\bnegotiable\b[^.\n]{0,30}\b(salary|ctc|pay)\b", re.I)
+VAGUE_PAY = re.compile(r"\b(best in (?:the )?industry|competitive (?:salary|pay|compensation)|attractive (?:salary|package)|as per industry standards?)\b", re.I)
+STRUCTURE = [("fixed", r"\bfixed\b"), ("variable", r"\bvariable\b"), ("bonus", r"\bbonus\b"), ("ESOPs", r"\besops?\b|\bstock options?\b"),
+             ("incentives", r"\bincentives?\b"), ("in-hand", r"\bin[- ]hand\b")]
+
+
+def _line_of(desc: str, m: re.Match) -> str:
+    start = desc.rfind("\n", 0, m.start()) + 1
+    end = desc.find("\n", m.end())
+    return desc[start:end if end != -1 else len(desc)].strip()[:240]
+
+
+def extract_notice(desc: str) -> dict:
+    """Notice-period requirement as stated. status: explicit | inferred | missing."""
+    out = {"status": "missing", "max_days": None, "mandatory": False, "evidence": None}
+    m = NOTICE_IMMEDIATE.search(desc)
+    if m:
+        line = _line_of(desc, m)
+        out.update(status="explicit", max_days=0, evidence=line,
+                   mandatory=not PREFERRED_WORDS.search(line) and not re.search(r"\bpreferred\b", line, re.I))
+        return out
+    for rx in NOTICE_DAYS:
+        m = rx.search(desc)
+        if m:
+            n = int(m.group(1))
+            unit = (m.group(2) if m.lastindex and m.lastindex >= 2 else "days").lower()
+            days = n * (7 if unit.startswith("week") else 30 if unit.startswith("month") else 1)
+            if days > 365:
+                continue
+            line = _line_of(desc, m)
+            out.update(status="explicit", max_days=days, evidence=line,
+                       mandatory=not PREFERRED_WORDS.search(line))
+            return out
+    m = NOTICE_SOFT.search(desc)
+    if m:
+        out.update(status="inferred", evidence=_line_of(desc, m), mandatory=False)
+    return out
+
+
+def extract_compensation(desc: str, job: dict) -> dict:
+    """Compensation as stated (never estimated). Amounts in INR per year when the JD gives LPA/₹ figures."""
+    out = {"status": "missing", "min_inr": None, "max_inr": None, "currency": None, "negotiable": False,
+           "structure": [], "evidence": None}
+    if job.get("salary_max") or job.get("salary_min"):
+        out.update(status="explicit", min_inr=job.get("salary_min") if (job.get("salary_currency") or "").upper() == "INR" else None,
+                   max_inr=job.get("salary_max") if (job.get("salary_currency") or "").upper() == "INR" else None,
+                   currency=job.get("salary_currency"), evidence=job.get("salary_text"))
+    m = CTC_RANGE.search(desc)
+    if m and out["status"] == "missing":
+        a, b = float(m.group(1)) * 1e5, float(m.group(2)) * 1e5
+        out.update(status="explicit", min_inr=min(a, b), max_inr=max(a, b), currency="INR", evidence=_line_of(desc, m))
+    m = CTC_UPTO.search(desc)
+    if m and out["max_inr"] is None:
+        out.update(status="explicit", max_inr=float(m.group(1)) * 1e5, currency="INR", evidence=_line_of(desc, m))
+    nm = NEGOTIABLE.search(desc)
+    if nm:
+        out["negotiable"] = True
+        out["evidence"] = out["evidence"] or _line_of(desc, nm)
+    if out["status"] == "missing":
+        vm = VAGUE_PAY.search(desc)
+        if vm:
+            out.update(status="unverified", evidence=_line_of(desc, vm))
+        elif nm:
+            out["status"] = "inferred"
+    low = desc.lower()
+    out["structure"] = [label for label, rx in STRUCTURE if re.search(rx, low)] if re.search(r"\b(ctc|salary|compensation|pay)\b", low) else []
+    return out
+
+
 def edu_level_of(text: str) -> int:
     for lvl, rx in EDU_LEVELS:
         if rx.search(text):
@@ -203,6 +285,8 @@ def parse_requirements(job: dict, candidate_terms: list[str] | None = None) -> d
         "injection_markers": injection,
         "responsibilities": secs["responsibilities"][:30],
         "keywords": keywords,
+        "notice": extract_notice(desc),
+        "compensation": extract_compensation(desc, job),
         "confidence": confidence,
         "method": "deterministic-v1",
     }
